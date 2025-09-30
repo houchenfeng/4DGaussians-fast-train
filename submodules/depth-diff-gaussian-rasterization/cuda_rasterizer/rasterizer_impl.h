@@ -14,6 +14,8 @@
 #include <iostream>
 #include <vector>
 #include "rasterizer.h"
+#include <cstdint>
+#include <stdint.h>
 #include <cuda_runtime_api.h>
 
 namespace CudaRasterizer
