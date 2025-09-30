@@ -29,8 +29,9 @@ python scripts/downsample_point.py ./colmap_tmp/dense/fused.ply "./points3D_mult
 echo "完成: 点云下采样"
 
 echo "[8/8] 计算相机位姿 (LLFF)"
-git clone https://github.com/Fyusion/LLFF.git
-pip install scikit-image
+# 初始化/更新 LLFF 子模块
+git submodule update --init --recursive LLFF | cat
+pip install -q scikit-image
 python LLFF/imgs2poses.py ./colmap_tmp/
 
 # cp ./colmap_tmp/poses_bounds.npy "$workdir/poses_bounds_multipleview.npy"
@@ -38,7 +39,7 @@ python LLFF/imgs2poses.py ./colmap_tmp/
 
 echo "清理临时目录"
 # rm -rf ./colmap_tmp
-# rm -rf ./LLFF
+# 注意：LLFF 为子模块，不清理
 echo "全部完成"
 
 
