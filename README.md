@@ -47,9 +47,25 @@ git submodule update --init --recursive
 conda create -n Gaussians4D python=3.7 
 conda activate Gaussians4D
 
+# env
+conda create --name my_env python=3.12
+conda activate my_env
+pip install torch==2.8.0+cu128 torchvision==0.23.0+cu128 --index-url https://download.pytorch.org/whl/cu128
+conda install -c nvidia cuda==12.8
+pip3 install torch==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cu128
+# mmcv from source: https://mmcv.readthedocs.io/en/latest/get_started/build.html
+# gcc (Debian 12.2.0-14+deb12u1) 12.2.0
+# git clone https://github.com/open-mmlab/mmcv.git
+# cd mmcv
+pip install -r requirements/optional.txt
+pip install -e . -v
+
+
 pip install -r requirements.txt
 pip install -e submodules/depth-diff-gaussian-rasterization
+pip install submodules/depth-diff-gaussian-rasterization
 pip install -e submodules/simple-knn
+pip install submodules/simple-knn
 ```
 
 In our environment, we use pytorch=1.13.1+cu116.
