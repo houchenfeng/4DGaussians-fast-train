@@ -63,6 +63,7 @@ class Scene:
             dataset_type="MultipleView"
         else:
             assert False, "Could not recognize scene type!"
+        print(f"[Scene] dataset_type={dataset_type}")
         self.maxtime = scene_info.maxtime
         self.dataset_type = dataset_type
         self.cameras_extent = scene_info.nerf_normalization["radius"]
@@ -72,6 +73,10 @@ class Scene:
         self.test_camera = FourDGSdataset(scene_info.test_cameras, args, dataset_type)
         print("Loading Video Cameras")
         self.video_camera = FourDGSdataset(scene_info.video_cameras, args, dataset_type)
+        try:
+            print(f"[Scene] dataset_type={self.dataset_type} train_len={len(self.train_camera)} test_len={len(self.test_camera)} video_len={len(self.video_camera)}")
+        except Exception as e:
+            print(f"[Scene] length print failed: {e}")
 
         # self.video_camera = cameraList_from_camInfos(scene_info.video_cameras,-1,args)
         xyz_max = scene_info.point_cloud.points.max(axis=0)

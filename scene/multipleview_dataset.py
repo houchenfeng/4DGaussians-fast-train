@@ -34,6 +34,10 @@ class multipleview_dataset(Dataset):
         image_paths=[]
         image_poses=[]
         image_times=[]
+        try:
+            print(f"[MultipleViewDataset] detected_cameras={len(cam_extrinsics)} frames_per_cam={image_length}")
+        except Exception as e:
+            print(f"[MultipleViewDataset] stats print failed: {e}")
         for idx, key in enumerate(cam_extrinsics):
             extr = cam_extrinsics[key]
             R = np.transpose(qvec2rotmat(extr.qvec))
@@ -52,7 +56,10 @@ class multipleview_dataset(Dataset):
                 image_paths.append(image_path)
                 image_poses.append((R,T))
                 image_times.append(float(i/image_length))
-
+        try:
+            print(f"[MultipleViewDataset] total_images={len(image_paths)}")
+        except Exception as e:
+            print(f"[MultipleViewDataset] total_images print failed: {e}")
         return image_paths, image_poses,image_times
     
     def get_video_cam_infos(self,datadir):

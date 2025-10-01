@@ -602,6 +602,10 @@ def readMultipleViewinfos(datadir,llffhold=8):
     from scene.multipleview_dataset import multipleview_dataset
     train_cam_infos = multipleview_dataset(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, cam_folder=datadir,split="train")
     test_cam_infos = multipleview_dataset(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, cam_folder=datadir,split="test")
+    try:
+        print(f"[MultipleView] train_images={len(train_cam_infos)} test_images={len(test_cam_infos)} video_images={len(getattr(test_cam_infos, 'video_cam_infos', []))}")
+    except Exception as e:
+        print(f"[MultipleView] length print failed: {e}")
 
     train_cam_infos_ = format_infos(train_cam_infos,"train")
     nerf_normalization = getNerfppNorm(train_cam_infos_)
@@ -630,6 +634,8 @@ def readMultipleViewinfos(datadir,llffhold=8):
                            maxtime=0,
                            nerf_normalization=nerf_normalization,
                            ply_path=ply_path)
+    print("[MultipleView] SceneInfo constructed: ",
+          f"train={len(train_cam_infos)} test={len(test_cam_infos)} video={len(test_cam_infos.video_cam_infos)}")
     return scene_info
 
 sceneLoadTypeCallbacks = {

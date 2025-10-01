@@ -24,10 +24,11 @@ from utils.image_utils import psnr
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams, ModelHiddenParams
 from torch.utils.data import DataLoader
-from utils.timer import Timer
+from utils.timer import Timer, DetailedTimer
 from utils.loader_utils import FineSampler, get_stamp_list
+from utils.debug_utils import save_debug_image, create_debug_summary
 import lpips
-from utils.scene_utils import render_training_image, save_debug_image
+from utils.scene_utils import render_training_image
 from time import time
 import copy
 
@@ -38,15 +39,9 @@ try:
     TENSORBOARD_FOUND = True
 except ImportError:
     TENSORBOARD_FOUND = False
-def create_infinite_dataloader(dataloader):
-    """创建无限循环的数据加载器迭代器"""
-    while True:
-        for batch in dataloader:
-            yield batch
-
 def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_iterations, 
                          checkpoint_iterations, checkpoint, debug_from,
-                         gaussians, scene, stage, tb_writer, train_iter,timer):
+                         gaussians, scene, stage, tb_writer, train_iter, timer, detailed_timer=None, debug_mode=False):
     first_iter = 0
 
     gaussians.training_setup(opt)
@@ -79,26 +74,6 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
     video_cams = scene.getVideoCameras()
     test_cams = scene.getTestCameras()
     train_cams = scene.getTrainCameras()
-    # 准备统一计时日志文件（包含所有阶段）
-    timing_file = os.path.join(scene.model_path, "timing.csv")
-    if not os.path.exists(timing_file):
-        try:
-            with open(timing_file, "w") as f:
-                f.write("stage,iteration,elapsed_ms,loss,psnr,points,section_ms_data,section_ms_render,section_ms_loss,section_ms_backward,section_ms_densify,section_ms_optim,section_ms_log\n")
-        except Exception as e:
-            print(f"warning: failed to create timing log {timing_file}: {e}")
-    # 分阶段累计计时器
-    stage_accum = {
-        "data": 0.0,
-        "render": 0.0,
-        "loss": 0.0,
-        "backward": 0.0,
-        "densify": 0.0,
-        "optim": 0.0,
-        "log": 0.0,
-        "total": 0.0,
-    }
-    stage_wall_start = time()
 
 
     if not viewpoint_stack and not opt.dataloader:
@@ -108,8 +83,6 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
     # 
     batch_size = opt.batch_size
     print("data loading done")
-    
-    
     if opt.dataloader:
         viewpoint_stack = scene.getTrainCameras()
         if opt.custom_sampler is not None:
@@ -117,11 +90,9 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
             viewpoint_stack_loader = DataLoader(viewpoint_stack, batch_size=batch_size,sampler=sampler,num_workers=16,collate_fn=list)
             random_loader = False
         else:
-            # 使用无限循环的DataLoader避免频繁重新创建
             viewpoint_stack_loader = DataLoader(viewpoint_stack, batch_size=batch_size,shuffle=True,num_workers=16,collate_fn=list)
             random_loader = True
-        # 使用无限循环迭代器，避免StopIteration异常
-        loader = create_infinite_dataloader(viewpoint_stack_loader)
+        loader = iter(viewpoint_stack_loader)
     
     
     # dynerf, zerostamp_init
@@ -135,7 +106,11 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
         load_in_memory = False 
                             # 
     count = 0
-    for iteration in range(first_iter, final_iter+1):        
+    for iteration in range(first_iter, final_iter+1):
+        # 开始迭代计时
+        if detailed_timer:
+            detailed_timer.start_timer(f"{stage}_iteration")
+            
         if network_gui.conn == None:
             network_gui.try_connect()
         while network_gui.conn != None:
@@ -174,34 +149,17 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
         # Pick a random Camera
 
         # dynerf's branch
-        # if opt.dataloader and not load_in_memory:
-        #     # 方案1：使用无限循环迭代器
-        #     # t_data_start = time()
-        #     # viewpoint_cams = next(loader)
-        #     # stage_accum["data"] += (time() - t_data_start) * 1000.0
-            
-        #     # 方案2：随机采样不清空数据
-        #     t_data_start = time()
-        #     viewpoint_cams = []
-        #     for _ in range(batch_size):
-        #         # 从完整数据集中随机选择，不清空数据
-        #         random_idx = randint(0, len(viewpoint_stack) - 1)
-        #         viewpoint_cams.append(viewpoint_stack[random_idx])
-        #     stage_accum["data"] += (time() - t_data_start) * 1000.0
         if opt.dataloader and not load_in_memory:
-            t_data_start = time()
             try:
                 viewpoint_cams = next(loader)
             except StopIteration:
-                # print("reset dataloader into random dataloader.")
+                print("reset dataloader into random dataloader.")
                 if not random_loader:
                     viewpoint_stack_loader = DataLoader(viewpoint_stack, batch_size=opt.batch_size,shuffle=True,num_workers=32,collate_fn=list)
                     random_loader = True
                 loader = iter(viewpoint_stack_loader)
-            stage_accum["data"] += (time() - t_data_start) * 1000.0
 
         else:
-            t_data_start = time()
             idx = 0
             viewpoint_cams = []
 
@@ -214,16 +172,16 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
                 idx +=1
             if len(viewpoint_cams) == 0:
                 continue
-            stage_accum["data"] += (time() - t_data_start) * 1000.0
         # print(len(viewpoint_cams))     
         # breakpoint()   
         # Render
         if (iteration - 1) == debug_from:
             pipe.debug = True
-        # 渲染计时
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-        t_render_start = time()
+            
+        # 开始渲染计时
+        if detailed_timer:
+            detailed_timer.start_timer(f"{stage}_render")
+            
         images = []
         gt_images = []
         radii_list = []
@@ -242,21 +200,30 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
             radii_list.append(radii.unsqueeze(0))
             visibility_filter_list.append(visibility_filter.unsqueeze(0))
             viewspace_point_tensor_list.append(viewspace_point_tensor)
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-        section_ms_render = (time() - t_render_start) * 1000.0
-        stage_accum["render"] += section_ms_render
+            
+            # Debug模式：保存拼接图像
+            if debug_mode and iteration % 100 == 0:  # 每100次迭代保存一次debug图像
+                try:
+                    save_debug_image(image, gt_image, stage, iteration, viewpoint_cam, 
+                                   scene.model_path, scene.maxtime)
+                except Exception as e:
+                    print(f"Debug图像保存失败: {e}")
+                    
+        # 结束渲染计时
+        if detailed_timer:
+            detailed_timer.end_timer(f"{stage}_render")
         
 
         radii = torch.cat(radii_list,0).max(dim=0).values
         visibility_filter = torch.cat(visibility_filter_list).any(dim=0)
         image_tensor = torch.cat(images,0)
         gt_image_tensor = torch.cat(gt_images,0)
+        # 开始损失计算计时
+        if detailed_timer:
+            detailed_timer.start_timer(f"{stage}_loss_computation")
+            
         # Loss
         # breakpoint()
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-        t_loss_start = time()
         Ll1 = l1_loss(image_tensor, gt_image_tensor[:,:3,:,:])
 
         psnr_ = psnr(image_tensor, gt_image_tensor).mean().double()
@@ -274,26 +241,18 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
         # if opt.lambda_lpips !=0:
         #     lpipsloss = lpips_loss(image_tensor,gt_image_tensor,lpips_model)
         #     loss += opt.lambda_lpips * lpipsloss
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-        section_ms_loss = (time() - t_loss_start) * 1000.0
-        stage_accum["loss"] += section_ms_loss
         
         loss.backward()
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-        section_ms_backward = 0.0
-        # 由于 backward 与上一步连续，单独统计为近似 0；也可单独计时：
-        # 重新测量 backward 段
-        # if torch.cuda.is_available(): torch.cuda.synchronize()
-        # t_bw = time(); loss.backward(); torch.cuda.synchronize(); section_ms_backward = (time()-t_bw)*1000.0
-        stage_accum["backward"] += section_ms_backward
         if torch.isnan(loss).any():
             print("loss is nan,end training, reexecv program now.")
             os.execv(sys.executable, [sys.executable] + sys.argv)
         viewspace_point_tensor_grad = torch.zeros_like(viewspace_point_tensor)
         for idx in range(0, len(viewspace_point_tensor_list)):
             viewspace_point_tensor_grad = viewspace_point_tensor_grad + viewspace_point_tensor_list[idx].grad
+            
+        # 结束损失计算计时
+        if detailed_timer:
+            detailed_timer.end_timer(f"{stage}_loss_computation")
         iter_end.record()
 
         with torch.no_grad():
@@ -301,11 +260,6 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
             ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
             ema_psnr_for_log = 0.4 * psnr_ + 0.6 * ema_psnr_for_log
             total_point = gaussians._xyz.shape[0]
-            # 计算单次迭代耗时(ms)
-            try:
-                elapsed_ms = iter_start.elapsed_time(iter_end)
-            except Exception:
-                elapsed_ms = 0.0
             if iteration % 10 == 0:
                 progress_bar.set_postfix({"Loss": f"{ema_loss_for_log:.{7}f}",
                                           "psnr": f"{psnr_:.{2}f}",
@@ -316,30 +270,10 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
 
             # Log and save
             timer.pause()
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
-            t_log_start = time()
-            training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed_ms, testing_iterations, scene, render, [pipe, background], stage, scene.dataset_type)
-            # 将计时、损失等写入统一 CSV
-            try:
-                with open(timing_file, "w") as f:
-                    # 占位，具体 section 时间在下方 densify/optim 后写入
-                    pass
-            except Exception as e:
-                print(f"warning: failed to append timing log: {e}")
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
-            section_ms_log = (time() - t_log_start) * 1000.0
-            stage_accum["log"] += section_ms_log
+            training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, [pipe, background], stage, scene.dataset_type)
             if (iteration in saving_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration, stage)
-            
-            # 每100轮保存debug图像
-            if iteration % 100 == 0:
-                # 选择一个训练相机进行debug
-                debug_cam = train_cams[iteration % len(train_cams)]
-                save_debug_image(scene, gaussians, debug_cam, render, pipe, background, stage, iteration, scene.dataset_type)
             if dataset.render_process:
                 if (iteration < 1000 and iteration % 10 == 9) \
                     or (iteration < 3000 and iteration % 50 == 49) \
@@ -351,10 +285,11 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
 
                     # total_images.append(to8b(temp_image).transpose(1,2,0))
             timer.start()
+            # 开始densification计时
+            if detailed_timer:
+                detailed_timer.start_timer(f"{stage}_densification")
+                
             # Densification
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
-            t_densify_start = time()
             if iteration < opt.densify_until_iter :
                 # Keep track of max radii in image-space for pruning
                 gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
@@ -383,60 +318,64 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
                     print("reset opacity")
                     gaussians.reset_opacity()
                     
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
-            section_ms_densify = (time() - t_densify_start) * 1000.0
-            stage_accum["densify"] += section_ms_densify
+            # 结束densification计时
+            if detailed_timer:
+                detailed_timer.end_timer(f"{stage}_densification")
+                    
             
 
+            # 开始优化器步骤计时
+            if detailed_timer:
+                detailed_timer.start_timer(f"{stage}_optimizer_step")
+                
             # Optimizer step
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
-            t_optim_start = time()
             if iteration < opt.iterations:
                 gaussians.optimizer.step()
                 gaussians.optimizer.zero_grad(set_to_none = True)
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
-            section_ms_optim = (time() - t_optim_start) * 1000.0
-            stage_accum["optim"] += section_ms_optim
-
-            # 在本次迭代结束后，写入本行完整计时（包含 densify/optim/log 等）
-            try:
-                with open(timing_file, "w") as f:
-                    f.write(
-                        f"{stage},{iteration},{elapsed_ms:.4f},{loss.item():.7f},{float(psnr_):.4f},{int(total_point)},{stage_accum['data']:.4f},{section_ms_render:.4f},{section_ms_loss:.4f},{section_ms_backward:.4f},{section_ms_densify:.4f},{section_ms_optim:.4f},{section_ms_log:.4f}\n"
-                    )
-            except Exception as e:
-                print(f"warning: failed to append timing log: {e}")
-            stage_accum["total"] += elapsed_ms
+                
+            # 结束优化器步骤计时
+            if detailed_timer:
+                detailed_timer.end_timer(f"{stage}_optimizer_step")
 
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" +f"_{stage}_" + str(iteration) + ".pth")
-    # 阶段结束，写入阶段总计时汇总
-    try:
-        stage_total_ms = (time() - stage_wall_start) * 1000.0
-        with open(timing_file, "w") as f:
-            f.write(
-                f"{stage},total,{stage_total_ms:.4f},,,,{stage_accum['data']:.4f},{stage_accum['render']:.4f},{stage_accum['loss']:.4f},{stage_accum['backward']:.4f},{stage_accum['densify']:.4f},{stage_accum['optim']:.4f},{stage_accum['log']:.4f}\n"
-            )
-    except Exception as e:
-        print(f"warning: failed to append stage total timing: {e}")
-def training(dataset, hyper, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, expname):
+                
+        # 结束迭代计时
+        if detailed_timer:
+            detailed_timer.end_timer(f"{stage}_iteration")
+def training(dataset, hyper, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, expname, debug_mode=False):
     # first_iter = 0
     tb_writer = prepare_output_and_logger(expname)
     gaussians = GaussianModel(dataset.sh_degree, hyper)
     dataset.model_path = args.model_path
     timer = Timer()
+    
+    # 初始化详细计时器
+    detailed_timer = DetailedTimer(output_dir=args.model_path)
+    
     scene = Scene(dataset, gaussians, load_coarse=None)
+    try:
+        print(f"[Train] dataset_type={scene.dataset_type} train={len(scene.getTrainCameras())} test={len(scene.getTestCameras())} video={len(scene.getVideoCameras())}")
+    except Exception as e:
+        print(f"[Train] length print failed: {e}")
     timer.start()
+    
+    # 打印debug模式信息
+    if debug_mode:
+        print(f"Debug模式已启用，debug图像将保存到: {os.path.join(args.model_path, 'debug')}")
+        print(f"时间长度信息: maxtime={scene.maxtime}")
+    
     scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_iterations,
                              checkpoint_iterations, checkpoint, debug_from,
-                             gaussians, scene, "coarse", tb_writer, opt.coarse_iterations,timer)
+                             gaussians, scene, "coarse", tb_writer, opt.coarse_iterations, timer, detailed_timer, debug_mode)
     scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_iterations,
                          checkpoint_iterations, checkpoint, debug_from,
-                         gaussians, scene, "fine", tb_writer, opt.iterations,timer)
+                         gaussians, scene, "fine", tb_writer, opt.iterations, timer, detailed_timer, debug_mode)
+    
+    # 训练结束后保存计时报告
+    detailed_timer.save_timing_report()
+    detailed_timer.print_summary()
 
 def prepare_output_and_logger(expname):    
     if not args.model_path:
@@ -539,10 +478,12 @@ if __name__ == "__main__":
     parser.add_argument("--start_checkpoint", type=str, default = None)
     parser.add_argument("--expname", type=str, default = "")
     parser.add_argument("--configs", type=str, default = "")
+    parser.add_argument("--debug_mode", action="store_true", default=False, help="启用debug模式，保存训练和GT图像的拼接图")
     
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
     if args.configs:
+        # import mmcv
         import mmengine
         from utils.params_utils import merge_hparams
         config = mmengine.Config.fromfile(args.configs)
@@ -555,7 +496,7 @@ if __name__ == "__main__":
     # Start GUI server, configure and run training
     network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
-    training(lp.extract(args), hp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, args.expname)
+    training(lp.extract(args), hp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, args.expname, args.debug_mode)
 
     # All done
     print("\nTraining complete.")
