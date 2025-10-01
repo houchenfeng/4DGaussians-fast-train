@@ -56,6 +56,51 @@ def render_training_image(scene, gaussians, viewpoints, render_func, pipe, backg
     pc_mask = gaussians.get_opacity
     pc_mask = pc_mask > 0.1
 
+@torch.no_grad()
+def save_debug_image(scene, gaussians, viewpoint, render_func, pipe, background, stage, iteration, dataset_type):
+    """保存debug图像，左右分别是GT和render"""
+    # 创建debug文件夹
+    debug_path = os.path.join(scene.model_path, "debug")
+    if not os.path.exists(debug_path):
+        os.makedirs(debug_path)
+    
+    # 渲染图像
+    render_pkg = render_func(viewpoint, gaussians, pipe, background, stage=stage, cam_type=dataset_type)
+    render_image = render_pkg["render"]
+    
+    # 获取GT图像
+    if dataset_type == "PanopticSports":
+        gt_image = viewpoint['image']
+    else:
+        gt_image = viewpoint.original_image
+    
+    # 转换为numpy数组并调整维度
+    render_np = render_image.permute(1, 2, 0).cpu().numpy()  # (H, W, 3)
+    gt_np = gt_image.permute(1, 2, 0).cpu().numpy()  # (H, W, 3)
+    
+    # 左右拼接图像
+    combined_image = np.concatenate((gt_np, render_np), axis=1)  # 水平拼接
+    
+    # 转换为PIL图像并保存
+    combined_image_pil = Image.fromarray((np.clip(combined_image, 0, 1) * 255).astype('uint8'))
+    
+    # 生成文件名
+    if hasattr(viewpoint, 'image_name'):
+        image_name = viewpoint.image_name
+    else:
+        image_name = "unknown"
+    
+    if hasattr(viewpoint, 'time'):
+        time_str = f"{viewpoint.time:.4f}"
+    else:
+        time_str = "0.0000"
+    
+    filename = f"{stage}_{iteration}_{image_name}_{time_str}.jpg"
+    filepath = os.path.join(debug_path, filename)
+    
+    combined_image_pil.save(filepath)
+    print(f"Debug image saved: {filepath}")
+
 def visualize_and_save_point_cloud(point_cloud, R, T, filename):
     fig = plt.figure()
     ax = fig.add_subplot(111, projection='3d')

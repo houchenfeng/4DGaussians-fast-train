@@ -27,7 +27,7 @@ from torch.utils.data import DataLoader
 from utils.timer import Timer
 from utils.loader_utils import FineSampler, get_stamp_list
 import lpips
-from utils.scene_utils import render_training_image
+from utils.scene_utils import render_training_image, save_debug_image
 from time import time
 import copy
 
@@ -38,6 +38,12 @@ try:
     TENSORBOARD_FOUND = True
 except ImportError:
     TENSORBOARD_FOUND = False
+def create_infinite_dataloader(dataloader):
+    """创建无限循环的数据加载器迭代器"""
+    while True:
+        for batch in dataloader:
+            yield batch
+
 def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_iterations, 
                          checkpoint_iterations, checkpoint, debug_from,
                          gaussians, scene, stage, tb_writer, train_iter,timer):
@@ -102,6 +108,8 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
     # 
     batch_size = opt.batch_size
     print("data loading done")
+    
+    
     if opt.dataloader:
         viewpoint_stack = scene.getTrainCameras()
         if opt.custom_sampler is not None:
@@ -109,9 +117,11 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
             viewpoint_stack_loader = DataLoader(viewpoint_stack, batch_size=batch_size,sampler=sampler,num_workers=16,collate_fn=list)
             random_loader = False
         else:
+            # 使用无限循环的DataLoader避免频繁重新创建
             viewpoint_stack_loader = DataLoader(viewpoint_stack, batch_size=batch_size,shuffle=True,num_workers=16,collate_fn=list)
             random_loader = True
-        loader = iter(viewpoint_stack_loader)
+        # 使用无限循环迭代器，避免StopIteration异常
+        loader = create_infinite_dataloader(viewpoint_stack_loader)
     
     
     # dynerf, zerostamp_init
@@ -164,17 +174,31 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
         # Pick a random Camera
 
         # dynerf's branch
+        # if opt.dataloader and not load_in_memory:
+        #     # 方案1：使用无限循环迭代器
+        #     # t_data_start = time()
+        #     # viewpoint_cams = next(loader)
+        #     # stage_accum["data"] += (time() - t_data_start) * 1000.0
+            
+        #     # 方案2：随机采样不清空数据
+        #     t_data_start = time()
+        #     viewpoint_cams = []
+        #     for _ in range(batch_size):
+        #         # 从完整数据集中随机选择，不清空数据
+        #         random_idx = randint(0, len(viewpoint_stack) - 1)
+        #         viewpoint_cams.append(viewpoint_stack[random_idx])
+        #     stage_accum["data"] += (time() - t_data_start) * 1000.0
         if opt.dataloader and not load_in_memory:
+            t_data_start = time()
             try:
-                t_data_start = time()
                 viewpoint_cams = next(loader)
-                stage_accum["data"] += (time() - t_data_start) * 1000.0
             except StopIteration:
-                print("reset dataloader into random dataloader.")
+                # print("reset dataloader into random dataloader.")
                 if not random_loader:
                     viewpoint_stack_loader = DataLoader(viewpoint_stack, batch_size=opt.batch_size,shuffle=True,num_workers=32,collate_fn=list)
                     random_loader = True
                 loader = iter(viewpoint_stack_loader)
+            stage_accum["data"] += (time() - t_data_start) * 1000.0
 
         else:
             t_data_start = time()
@@ -298,7 +322,7 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
             training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed_ms, testing_iterations, scene, render, [pipe, background], stage, scene.dataset_type)
             # 将计时、损失等写入统一 CSV
             try:
-                with open(timing_file, "a") as f:
+                with open(timing_file, "w") as f:
                     # 占位，具体 section 时间在下方 densify/optim 后写入
                     pass
             except Exception as e:
@@ -310,6 +334,12 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
             if (iteration in saving_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration, stage)
+            
+            # 每100轮保存debug图像
+            if iteration % 100 == 0:
+                # 选择一个训练相机进行debug
+                debug_cam = train_cams[iteration % len(train_cams)]
+                save_debug_image(scene, gaussians, debug_cam, render, pipe, background, stage, iteration, scene.dataset_type)
             if dataset.render_process:
                 if (iteration < 1000 and iteration % 10 == 9) \
                     or (iteration < 3000 and iteration % 50 == 49) \
@@ -373,7 +403,7 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
 
             # 在本次迭代结束后，写入本行完整计时（包含 densify/optim/log 等）
             try:
-                with open(timing_file, "a") as f:
+                with open(timing_file, "w") as f:
                     f.write(
                         f"{stage},{iteration},{elapsed_ms:.4f},{loss.item():.7f},{float(psnr_):.4f},{int(total_point)},{stage_accum['data']:.4f},{section_ms_render:.4f},{section_ms_loss:.4f},{section_ms_backward:.4f},{section_ms_densify:.4f},{section_ms_optim:.4f},{section_ms_log:.4f}\n"
                     )
@@ -387,7 +417,7 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
     # 阶段结束，写入阶段总计时汇总
     try:
         stage_total_ms = (time() - stage_wall_start) * 1000.0
-        with open(timing_file, "a") as f:
+        with open(timing_file, "w") as f:
             f.write(
                 f"{stage},total,{stage_total_ms:.4f},,,,{stage_accum['data']:.4f},{stage_accum['render']:.4f},{stage_accum['loss']:.4f},{stage_accum['backward']:.4f},{stage_accum['densify']:.4f},{stage_accum['optim']:.4f},{stage_accum['log']:.4f}\n"
             )
