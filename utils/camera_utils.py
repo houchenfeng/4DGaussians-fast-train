@@ -31,7 +31,8 @@ def loadCam(args, id, cam_info, resolution_scale):
                   FoVx=cam_info.FovX, FoVy=cam_info.FovY, 
                   image=cam_info.image, gt_alpha_mask=None,
                   image_name=cam_info.image_name, uid=id, data_device=args.data_device, 
-                  time = cam_info.time,
+                  time = cam_info.time, camid=getattr(cam_info, 'camid', None),
+                  frameid=getattr(cam_info, 'frameid', None)
 )
 
 def cameraList_from_camInfos(cam_infos, resolution_scale, args):

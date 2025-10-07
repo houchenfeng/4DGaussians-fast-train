@@ -50,7 +50,7 @@ CUDA_VISIBLE_DEVICES=0 python train.py \
     --expname "${TEST_EXPNAME}" \
     --configs "${TEST_CONFIG}" \
     --debug_mode \
-    --quiet
+    
 
 # 计算实际耗时
 end_time=$(date +%s)

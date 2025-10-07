@@ -11,6 +11,7 @@
 
 import os
 import sys
+import re
 from PIL import Image
 from scene.cameras import Camera
 
@@ -43,6 +44,8 @@ class CameraInfo(NamedTuple):
     height: int
     time : float
     mask: np.array
+    camid: int = None
+    frameid: int = None
    
 class SceneInfo(NamedTuple):
     point_cloud: BasicPointCloud
@@ -52,6 +55,33 @@ class SceneInfo(NamedTuple):
     nerf_normalization: dict
     ply_path: str
     maxtime: int
+
+def extract_camid_frameid_from_path(image_path):
+    """
+    从 image_path 中提取 camid 和 frameid
+    
+    Args:
+        image_path: 图像路径，格式如 "/path/to/cam01/frame_00001.jpg"
+    
+    Returns:
+        tuple: (camid, frameid) 其中 camid 和 frameid 都是整数
+    """
+    if image_path is None:
+        return None, None
+    
+    # 使用正则表达式匹配 camXX/frame_XXXXX.jpg 格式
+    # 匹配 cam 后面的数字
+    cam_match = re.search(r'cam(\d+)', image_path)
+    # 匹配 frame_ 后面的数字
+    frame_match = re.search(r'frame_(\d+)', image_path)
+    
+    if cam_match and frame_match:
+        camid = int(cam_match.group(1))
+        frameid = int(frame_match.group(1))
+        return camid, frameid
+    else:
+        # 如果无法从路径提取，返回 None
+        return None, None
 
 def getNerfppNorm(cam_info):
     def get_center_and_diag(cam_centers):
@@ -356,16 +386,20 @@ def format_infos(dataset,split):
     image = dataset[0][0]
     if split == "train":
         for idx in tqdm(range(len(dataset))):
-            image_path = None
+            image_path = dataset.image_paths[idx] if hasattr(dataset, 'image_paths') else None
             image_name = f"{idx}"
             time = dataset.image_times[idx]
             # matrix = np.linalg.inv(np.array(pose))
             R,T = dataset.load_pose(idx)
             FovX = focal2fov(dataset.focal[0], image.shape[1])
             FovY = focal2fov(dataset.focal[0], image.shape[2])
+            
+            # 从 image_path 提取 camid 和 frameid
+            camid, frameid = extract_camid_frameid_from_path(image_path)
+            
             cameras.append(CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
                                 image_path=image_path, image_name=image_name, width=image.shape[2], height=image.shape[1],
-                                time = time, mask=None))
+                                time = time, mask=None, camid=camid, frameid=frameid))
 
     return cameras
 

@@ -88,9 +88,11 @@ class multipleview_dataset(Dataset):
             T = -pose[:3,3].dot(R)
             FovX = self.FovX
             FovY = self.FovY
+            
+            # 对于视频相机，camid 和 frameid 都设为 None，因为它们是合成的相机位置
             cameras.append(CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
                                 image_path=image_path, image_name=image_name, width=image.shape[2], height=image.shape[1],
-                                time = time, mask=None))
+                                time = time, mask=None, camid=None, frameid=None))
         return cameras
     def __len__(self):
         return len(self.image_paths)

@@ -50,14 +50,17 @@ def save_debug_image(rendered_image, gt_image, stage, iteration, cam, output_dir
         # 兼容PanopticSports数据集格式
         time_val = cam.get('time', 0.0)
         image_name = cam.get('image_name', f'frame_{iteration}')
-    
-    camid = int(cam.uid / maxtime)+1 if maxtime > 0 else int(cam.uid / 300)+1
+
+    # camera_id = int(idx / 300) + 1
+    # camid = int(cam.uid / maxtime)+1 if maxtime > 0 else int(cam.uid / 300)+1
+    camid = cam.camid
+    frameid = cam.frameid
     # 计算帧数：将0-1的time值乘以maxtime转换为具体帧数
-    frame_number = int(time_val * maxtime) if maxtime > 0 else int(time_val * 300)
-    
+    # frame_number = int(time_val * maxtime) if maxtime > 0 else int(time_val * 300)
+
     # 生成文件名：{stage}_{iter}_{camid}_{int(cam.time*maxtime)}.png
-    filename = f"{stage}_{iteration}_cam{camid}_frame{frame_number}.png"
-    
+    # filename = f"{stage}_{iteration}_cam{camid}_frame{frame_number}.png"
+    filename = f"{stage}_{iteration}_cam{camid}_frame{frameid}.png"
     # 水平拼接图像
     combined_image = np.concatenate([rendered_np, gt_np], axis=1)
     
