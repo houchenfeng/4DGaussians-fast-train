@@ -65,23 +65,76 @@ echo ""
 # 显示计时报告摘要
 if [ -f "output/${TEST_EXPNAME}/timing_report.json" ]; then
     echo "=== 计时摘要 ==="
-    python -c "
+    python3 -c "
 import json
+import sys
+import os
+
 try:
-    with open('output/${TEST_EXPNAME}/timing_report.json', 'r') as f:
+    file_path = 'output/${TEST_EXPNAME}/timing_report.json'
+    print(f'正在读取文件: {file_path}')
+    
+    if not os.path.exists(file_path):
+        print(f'错误: 文件不存在 {file_path}')
+        sys.exit(1)
+    
+    with open(file_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
-    print(f'总训练时间: {data[\"total_training_time\"]:.1f} 秒')
+    
+    print(f'总训练时间: {data.get(\"total_training_time\", 0):.1f} 秒')
+    
     if 'training_logs' in data and data['training_logs']:
         logs = data['training_logs']
         print(f'训练日志条目: {len(logs)}')
         if logs:
             final_log = logs[-1]
             print(f'最终损失: {final_log.get(\"loss\", \"N/A\"):.6f}')
+            if 'psnr' in final_log and final_log['psnr'] is not None:
+                print(f'最终PSNR: {final_log[\"psnr\"]:.2f}')
+    
     print('\\n各阶段耗时:')
-    for name, timing in data.get('detailed_timings', {}).items():
-        print(f'  {name}: {timing[\"total_elapsed\"]:.2f}s ({timing[\"percentage\"]:.1f}%)')
+    detailed_timings = data.get('detailed_timings', {})
+    for category, timings in detailed_timings.items():
+        if isinstance(timings, dict):
+            print(f'  {category}:')
+            for name, timing in timings.items():
+                if isinstance(timing, dict) and 'total_elapsed' in timing:
+                    print(f'    {name}: {timing[\"total_elapsed\"]:.2f}s ({timing.get(\"percentage\", 0):.1f}%)')
+        else:
+            # 兼容旧的格式
+            if 'total_elapsed' in timings:
+                print(f'  {category}: {timings[\"total_elapsed\"]:.2f}s ({timings.get(\"percentage\", 0):.1f}%)')
+    
+    # 显示每轮用时统计
+    per_iteration = data.get('per_iteration_timings', {})
+    if per_iteration:
+        print('\\n每轮用时统计:')
+        iteration_times = []
+        for iter_num, timings in per_iteration.items():
+            if isinstance(timings, dict):
+                for key, time_val in timings.items():
+                    if key.endswith('_total'):
+                        iteration_times.append((int(iter_num), time_val))
+                        break
+        
+        if iteration_times:
+            iteration_times.sort(key=lambda x: x[0])
+            avg_time = sum(time for _, time in iteration_times) / len(iteration_times)
+            min_time = min(time for _, time in iteration_times)
+            max_time = max(time for _, time in iteration_times)
+            print(f'  平均每轮用时: {avg_time:.3f}s')
+            print(f'  最快轮次: {min_time:.3f}s, 最慢轮次: {max_time:.3f}s')
+            print(f'  总轮次数: {len(iteration_times)}')
+                
+except json.JSONDecodeError as e:
+    print(f'JSON解析错误: {e}')
+    print('文件内容可能损坏或格式不正确')
+except FileNotFoundError as e:
+    print(f'文件未找到: {e}')
 except Exception as e:
     print(f'读取计时报告失败: {e}')
+    import traceback
+    traceback.print_exc()
 "
 else
     echo "未找到计时报告文件"

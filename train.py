@@ -109,6 +109,7 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
     for iteration in range(first_iter, final_iter+1):
         # 开始迭代计时
         if detailed_timer:
+            detailed_timer.start_iteration(iteration)
             detailed_timer.start_timer(f"{stage}_iteration")
             detailed_timer.start_timer(f"{stage}_data_loading")
             
@@ -382,6 +383,8 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
         # 结束迭代计时
         if detailed_timer:
             detailed_timer.end_timer(f"{stage}_iteration")
+            # 记录每轮单独用时
+            detailed_timer.record_iteration_timing(iteration, stage)
 def training(dataset, hyper, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, expname, debug_mode=False):
     # first_iter = 0
     tb_writer = prepare_output_and_logger(expname)

@@ -35,6 +35,17 @@ class DetailedTimer:
         self.total_start = time.time()
         self.training_logs = []  # 存储训练日志
         self.current_iteration = 0
+        self.per_iteration_times = {}  # 存储每轮单独用时
+        self.last_iteration_end_time = time.time()  # 记录上一轮结束时间
+        self.current_iteration_start_time = time.time()  # 记录当前轮次开始时间
+        self.current_iteration_timers = {}  # 存储当前轮次各操作的累积时间
+        
+    def start_iteration(self, iteration):
+        """开始一轮迭代的计时"""
+        self.current_iteration = iteration
+        self.current_iteration_start_time = time.time()
+        # 初始化当前轮次的计时器
+        self.current_iteration_timers = {}
         
     def start_timer(self, name):
         """开始计时一个特定的操作"""
@@ -48,6 +59,36 @@ class DetailedTimer:
             elapsed = time.time() - self.timers[name]['start']
             self.timers[name]['elapsed'] += elapsed
             self.timers[name]['count'] += 1
+            # 记录当前轮次的操作用时
+            if name not in self.current_iteration_timers:
+                self.current_iteration_timers[name] = 0
+            self.current_iteration_timers[name] += elapsed
+            
+    def record_iteration_timing(self, iteration, stage):
+        """记录每轮单独用时"""
+        current_time = time.time()
+        
+        if iteration not in self.per_iteration_times:
+            self.per_iteration_times[iteration] = {}
+            
+        # 计算这轮的总用时（从当前轮次开始到结束）
+        iteration_total_time = current_time - self.current_iteration_start_time
+        self.per_iteration_times[iteration][f'{stage}_total'] = iteration_total_time
+        
+        # 记录各个子操作的单独用时（使用当前轮次的计时器）
+        for timer_name, timer_data in self.timers.items():
+            if timer_name.startswith(stage) and timer_name in self.current_iteration_timers:
+                iteration_operation_time = self.current_iteration_timers[timer_name]
+                self.per_iteration_times[iteration][timer_name] = iteration_operation_time
+        
+        # 更新当前轮次开始时间（为下一轮准备）
+        # 注意：这里不更新current_iteration_start_time，因为它应该在下一轮开始时更新
+        
+    def get_iteration_timing(self, iteration, stage):
+        """获取指定轮次的用时信息"""
+        if iteration not in self.per_iteration_times:
+            return None
+        return self.per_iteration_times[iteration]
             
     def pause_timer(self, name):
         """暂停计时"""
@@ -99,17 +140,46 @@ class DetailedTimer:
         for key, value in kwargs.items():
             log_entry[key] = convert_to_serializable(value)
         
+        # 记录每轮单独用时
+        self.record_iteration_timing(iteration, stage)
+        
+        # 添加每轮用时信息到日志
+        if iteration in self.per_iteration_times:
+            iteration_timings = self.per_iteration_times[iteration]
+            log_entry['iteration_timings'] = iteration_timings
+            log_entry['iteration_total_time'] = iteration_timings.get(f'{stage}_total', 0)
+        
         self.training_logs.append(log_entry)
         self.current_iteration = iteration
         
         # 打印当前轮次信息
-        print(f"\n[{current_time}] 迭代 {iteration} ({stage}) - 总用时: {elapsed_time:.1f}s")
+        iteration_total = log_entry.get('iteration_total_time', 0)
+        print(f"\n[{current_time}] 迭代 {iteration} ({stage}) - 累计用时: {elapsed_time:.1f}s, 本轮用时: {iteration_total:.3f}s")
         print(f"  损失: {loss:.6f}" + 
               (f", PSNR: {psnr:.2f}" if psnr is not None else "") + 
               (f", L1: {l1_loss:.6f}" if l1_loss is not None else ""))
         
-        # 打印当前计时器状态
-        self.print_current_timings()
+        # 打印当前轮次详细计时
+        self.print_iteration_timings(iteration, stage)
+        
+    def print_iteration_timings(self, iteration, stage):
+        """打印当前轮次的详细计时"""
+        if iteration not in self.per_iteration_times:
+            return
+            
+        print(f"  第{iteration}轮详细用时 ({stage}):")
+        iteration_timings = self.per_iteration_times[iteration]
+        
+        # 显示本轮总用时
+        total_time = iteration_timings.get(f'{stage}_total', 0)
+        print(f"    本轮总用时: {total_time:.3f}s")
+        
+        # 显示各个子操作的用时
+        for timer_name, time_val in iteration_timings.items():
+            if timer_name != f'{stage}_total' and timer_name.startswith(stage):
+                operation_name = timer_name.replace(f'{stage}_', '')
+                percentage = (time_val / total_time * 100) if total_time > 0 else 0
+                print(f"    {operation_name}: {time_val:.3f}s ({percentage:.1f}%)")
         
     def print_current_timings(self):
         """打印当前计时器状态"""
@@ -154,6 +224,7 @@ class DetailedTimer:
             report = {
                 'total_training_time': self.get_total_time(),
                 'training_logs': ensure_serializable(self.training_logs),
+                'per_iteration_timings': ensure_serializable(self.per_iteration_times),
                 'detailed_timings': {
                     'iteration_timers': {},
                     'sub_timers': {},
@@ -188,8 +259,8 @@ class DetailedTimer:
                 }
                 
             report_path = os.path.join(self.output_dir, filename)
-            with open(report_path, 'w') as f:
-                json.dump(report, f, indent=2)
+            with open(report_path, 'w', encoding='utf-8') as f:
+                json.dump(report, f, indent=2, ensure_ascii=False)
             print(f"计时报告已保存到: {report_path}")
             
     def save_training_logs(self, filename="training_logs.json"):
@@ -211,8 +282,8 @@ class DetailedTimer:
                     return str(obj)
             
             log_path = os.path.join(self.output_dir, filename)
-            with open(log_path, 'w') as f:
-                json.dump(ensure_serializable(self.training_logs), f, indent=2)
+            with open(log_path, 'w', encoding='utf-8') as f:
+                json.dump(ensure_serializable(self.training_logs), f, indent=2, ensure_ascii=False)
             print(f"训练日志已保存到: {log_path}")
             
     def print_summary(self):
