@@ -51,19 +51,20 @@ def save_debug_image(rendered_image, gt_image, stage, iteration, cam, output_dir
         time_val = cam.get('time', 0.0)
         image_name = cam.get('image_name', f'frame_{iteration}')
     
+    camid = int(cam.uid / maxtime)+1 if maxtime > 0 else int(cam.uid / 300)+1
     # 计算帧数：将0-1的time值乘以maxtime转换为具体帧数
-    frame_number = int(time_val * maxtime)
+    frame_number = int(time_val * maxtime) if maxtime > 0 else int(time_val * 300)
     
-    # 生成文件名：{stage}_{iter}_{cam.image_name}_{int(cam.time*maxtime)}.png
-    filename = f"{stage}_{iteration}_{image_name}_{frame_number}.png"
+    # 生成文件名：{stage}_{iter}_{camid}_{int(cam.time*maxtime)}.png
+    filename = f"{stage}_{iteration}_cam{camid}_frame{frame_number}.png"
     
     # 水平拼接图像
     combined_image = np.concatenate([rendered_np, gt_np], axis=1)
     
-    # 添加分隔线
-    separator = np.zeros((combined_image.shape[0], 5, 3), dtype=np.uint8)
-    separator.fill(255)  # 白色分隔线
-    combined_image = np.concatenate([rendered_np, separator, gt_np], axis=1)
+    # # 添加分隔线
+    # separator = np.zeros((combined_image.shape[0], 5, 3), dtype=np.uint8)
+    # separator.fill(255)  # 白色分隔线
+    # combined_image = np.concatenate([rendered_np, separator, gt_np], axis=1)
     
     # 保存图像
     combined_pil = Image.fromarray(combined_image)
@@ -83,3 +84,4 @@ def create_debug_summary(debug_dir, stage, iteration):
         f.write("文件名格式: {stage}_{iter}_{cam.image_name}_{frame_number}.png\n")
         f.write("图像布局: [渲染图像] | [真实图像]\n")
         f.write("帧数计算: int(cam.time * maxtime)\n")
+

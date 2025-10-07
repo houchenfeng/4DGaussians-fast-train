@@ -110,6 +110,7 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
         # 开始迭代计时
         if detailed_timer:
             detailed_timer.start_timer(f"{stage}_iteration")
+            detailed_timer.start_timer(f"{stage}_data_loading")
             
         if network_gui.conn == None:
             network_gui.try_connect()
@@ -172,6 +173,10 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
                 idx +=1
             if len(viewpoint_cams) == 0:
                 continue
+                
+        # 结束数据加载计时
+        if detailed_timer:
+            detailed_timer.end_timer(f"{stage}_data_loading")
         # print(len(viewpoint_cams))     
         # breakpoint()   
         # Render
@@ -203,6 +208,8 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
             
             # Debug模式：保存拼接图像
             if debug_mode and iteration % 100 == 0:  # 每100次迭代保存一次debug图像
+                save_debug_image(image, gt_image, stage, iteration, viewpoint_cam, 
+                                   scene.model_path, scene.maxtime)
                 try:
                     save_debug_image(image, gt_image, stage, iteration, viewpoint_cam, 
                                    scene.model_path, scene.maxtime)
@@ -213,11 +220,19 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
         if detailed_timer:
             detailed_timer.end_timer(f"{stage}_render")
         
+        # 开始后处理计时
+        if detailed_timer:
+            detailed_timer.start_timer(f"{stage}_postprocessing")
 
         radii = torch.cat(radii_list,0).max(dim=0).values
         visibility_filter = torch.cat(visibility_filter_list).any(dim=0)
         image_tensor = torch.cat(images,0)
         gt_image_tensor = torch.cat(gt_images,0)
+        
+        # 结束后处理计时
+        if detailed_timer:
+            detailed_timer.end_timer(f"{stage}_postprocessing")
+            
         # 开始损失计算计时
         if detailed_timer:
             detailed_timer.start_timer(f"{stage}_loss_computation")
@@ -260,6 +275,20 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
             ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
             ema_psnr_for_log = 0.4 * psnr_ + 0.6 * ema_psnr_for_log
             total_point = gaussians._xyz.shape[0]
+            
+            # 记录训练日志
+            if detailed_timer and (iteration % 10 == 0 or iteration == opt.iterations):
+                detailed_timer.log_iteration(
+                    iteration=iteration,
+                    loss=float(loss.item()),
+                    psnr=float(psnr_),
+                    l1_loss=float(Ll1.item()),
+                    stage=stage,
+                    total_points=total_point,
+                    ema_loss=ema_loss_for_log,
+                    ema_psnr=ema_psnr_for_log
+                )
+            
             if iteration % 10 == 0:
                 progress_bar.set_postfix({"Loss": f"{ema_loss_for_log:.{7}f}",
                                           "psnr": f"{psnr_:.{2}f}",
@@ -268,6 +297,10 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
             if iteration == opt.iterations:
                 progress_bar.close()
 
+            # 开始日志记录计时
+            if detailed_timer:
+                detailed_timer.start_timer(f"{stage}_logging")
+                
             # Log and save
             timer.pause()
             training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, [pipe, background], stage, scene.dataset_type)
@@ -285,6 +318,11 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
 
                     # total_images.append(to8b(temp_image).transpose(1,2,0))
             timer.start()
+            
+            # 结束日志记录计时
+            if detailed_timer:
+                detailed_timer.end_timer(f"{stage}_logging")
+                
             # 开始densification计时
             if detailed_timer:
                 detailed_timer.start_timer(f"{stage}_densification")
@@ -373,8 +411,9 @@ def training(dataset, hyper, opt, pipe, testing_iterations, saving_iterations, c
                          checkpoint_iterations, checkpoint, debug_from,
                          gaussians, scene, "fine", tb_writer, opt.iterations, timer, detailed_timer, debug_mode)
     
-    # 训练结束后保存计时报告
+    # 训练结束后保存计时报告和训练日志
     detailed_timer.save_timing_report()
+    detailed_timer.save_training_logs()
     detailed_timer.print_summary()
 
 def prepare_output_and_logger(expname):    

@@ -212,6 +212,11 @@ Then load checkpoint with:
 python train.py -s data/dnerf/bouncingballs --port 6017 --expname "dnerf/bouncingballs" --configs arguments/dnerf/bouncingballs.py --start_checkpoint "output/dnerf/bouncingballs/chkpnt_coarse_200.pth"
 # finestage: --start_checkpoint "output/dnerf/bouncingballs/chkpnt_fine_200.pth"
 ```
+## debug 
+```bash
+python train.py --source_path /path/to/data --model_path /path/to/output --debug_mode
+```
+
 
 ## Rendering
 
