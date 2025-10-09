@@ -27,6 +27,7 @@ from torch.utils.data import DataLoader
 from utils.timer import Timer, DetailedTimer
 from utils.loader_utils import FineSampler, get_stamp_list
 from utils.debug_utils import save_debug_image, create_debug_summary
+from utils.gradient_tracker import GradientTracker
 import lpips
 from utils.scene_utils import render_training_image
 from time import time
@@ -41,7 +42,7 @@ except ImportError:
     TENSORBOARD_FOUND = False
 def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_iterations, 
                          checkpoint_iterations, checkpoint, debug_from,
-                         gaussians, scene, stage, tb_writer, train_iter, timer, detailed_timer=None, debug_mode=False):
+                         gaussians, scene, stage, tb_writer, train_iter, timer, detailed_timer=None, debug_mode=False, gradient_tracker=None):
     first_iter = 0
 
     gaussians.training_setup(opt)
@@ -265,6 +266,15 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
         viewspace_point_tensor_grad = torch.zeros_like(viewspace_point_tensor)
         for idx in range(0, len(viewspace_point_tensor_list)):
             viewspace_point_tensor_grad = viewspace_point_tensor_grad + viewspace_point_tensor_list[idx].grad
+        
+        # 记录梯度信息
+        if gradient_tracker is not None and gradient_tracker.enable:
+            if iteration % 10 == 0:  # 每10次迭代记录一次
+                gradient_tracker.record_gradients(gaussians, iteration, viewspace_point_tensor_grad, stage=stage)
+            
+            # 定期保存可视化
+            if iteration % 100 == 0 and iteration > 0:
+                gradient_tracker.visualize_gradient_curves(iteration, save=True)
             
         # 结束损失计算计时
         if detailed_timer:
@@ -395,6 +405,13 @@ def training(dataset, hyper, opt, pipe, testing_iterations, saving_iterations, c
     # 初始化详细计时器
     detailed_timer = DetailedTimer(output_dir=args.model_path)
     
+    # 初始化梯度追踪器
+    enable_gradient_vis = getattr(args, 'enable_gradient_vis', False)
+    gradient_tracker = GradientTracker(output_dir=args.model_path, enable=enable_gradient_vis)
+    
+    if enable_gradient_vis:
+        print(f"Gradient visualization enabled, saving to: {os.path.join(args.model_path, 'gradient_vis')}")
+    
     scene = Scene(dataset, gaussians, load_coarse=None)
     try:
         print(f"[Train] dataset_type={scene.dataset_type} train={len(scene.getTrainCameras())} test={len(scene.getTestCameras())} video={len(scene.getVideoCameras())}")
@@ -409,15 +426,19 @@ def training(dataset, hyper, opt, pipe, testing_iterations, saving_iterations, c
     
     scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_iterations,
                              checkpoint_iterations, checkpoint, debug_from,
-                             gaussians, scene, "coarse", tb_writer, opt.coarse_iterations, timer, detailed_timer, debug_mode)
+                             gaussians, scene, "coarse", tb_writer, opt.coarse_iterations, timer, detailed_timer, debug_mode, gradient_tracker)
     scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_iterations,
                          checkpoint_iterations, checkpoint, debug_from,
-                         gaussians, scene, "fine", tb_writer, opt.iterations, timer, detailed_timer, debug_mode)
+                         gaussians, scene, "fine", tb_writer, opt.iterations, timer, detailed_timer, debug_mode, gradient_tracker)
     
     # 训练结束后保存计时报告和训练日志
     detailed_timer.save_timing_report()
     detailed_timer.save_training_logs()
     detailed_timer.print_summary()
+    
+    # 生成梯度分析报告
+    if enable_gradient_vis:
+        gradient_tracker.generate_report()
 
 def prepare_output_and_logger(expname):    
     if not args.model_path:
@@ -521,6 +542,8 @@ if __name__ == "__main__":
     parser.add_argument("--expname", type=str, default = "")
     parser.add_argument("--configs", type=str, default = "")
     parser.add_argument("--debug_mode", action="store_true", default=False, help="启用debug模式，保存训练和GT图像的拼接图")
+    parser.add_argument("--enable_gradient_vis", action="store_true", default=False, help="启用梯度可视化")
+    parser.add_argument("--gradient_vis_interval", type=int, default=10, help="梯度记录间隔")
     
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)

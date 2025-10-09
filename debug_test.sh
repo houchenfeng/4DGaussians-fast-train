@@ -50,6 +50,7 @@ CUDA_VISIBLE_DEVICES=0 python train.py \
     --expname "${TEST_EXPNAME}" \
     --configs "${TEST_CONFIG}" \
     --debug_mode \
+    --enable_gradient_vis \
     
 
 # 计算实际耗时

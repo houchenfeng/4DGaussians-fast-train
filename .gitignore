@@ -10,3 +10,4 @@ data/
 data
 # submodules/  # 允许将 submodules 目录纳入主仓库进行提交
 colmap_tmp/
+.log
