@@ -4,18 +4,19 @@
 # 10次迭代，预期训练时间: 30秒-1分钟
 
 echo "=== 极速调试测试模式 ==="
-echo "训练配置: 100次迭代 (100粗调 + 100精细调)"
+echo "训练配置: 300次迭代 (100粗调 + 300精细调)"
 echo "预期训练时间: 30秒-1分钟"
 echo "用途: 验证代码修改，测试计时功能"
 echo "梯度可视化: 启用 (每100次保存3D可视化)"
 echo "=========================="
 
 # 手动指定数字，端口、IP和实验名都基于这个数字
-# 使用方法: ./debug_test.sh [NUMBER]
-# 例如: ./debug_test.sh 1  (端口6019+1=6020, IP 127.0.0.1, 实验名debug_test_1)
-# 例如: ./debug_test.sh 5  (端口6019+5=6024, IP 127.0.0.5, 实验名debug_test_5)
+# 使用方法: ./debug_test.sh [NUMBER] [MAX_POINTS]
+# 例如: ./debug_test.sh 1  (端口6019+1=6020, IP 127.0.0.1, 实验名debug_test_1, 默认2000点)
+# 例如: ./debug_test.sh 5 5000  (端口6019+5=6024, IP 127.0.0.5, 实验名debug_test_5, 5000点)
 
 NUMBER=${1:-1}        # 默认数字1，可通过第一个参数指定
+MAX_POINTS=${2:-10000} # 默认10000点，可通过第二个参数指定
 TEST_PORT=$((6019 + NUMBER))  # 端口 = 6019 + 数字
 TEST_IP="127.0.0.${NUMBER}"   # IP = 127.0.0.数字
 TEST_EXPNAME="debug_test_${NUMBER}"  # 实验名 = debug_test_数字
@@ -27,6 +28,7 @@ echo "使用数字: ${NUMBER}"
 echo "使用端口: ${TEST_PORT} (6019 + ${NUMBER})"
 echo "使用IP: ${TEST_IP}"
 echo "实验名: ${TEST_EXPNAME}"
+echo "3D可视化最大点数: ${MAX_POINTS}"
 
 TEST_CONFIG="arguments/dynerf/debug_test.py"
 
@@ -54,6 +56,8 @@ CUDA_VISIBLE_DEVICES=0  python train.py \
     --debug_mode \
     --enable_gradient_vis \
     --gradient_3d_interval 100 \
+    --gradient_max_points ${MAX_POINTS} \
+    --save_iterations 300 \
     
 
 # 计算实际耗时
@@ -151,6 +155,15 @@ echo "=== Results Location ==="
 echo "Timing report: output/${TEST_EXPNAME}/timing_report.json"
 echo "Gradient curves: output/${TEST_EXPNAME}/gradient_vis/gradient_curves/"
 echo "3D visualization: output/${TEST_EXPNAME}/gradient_vis/gradient_3d/"
+echo "Saved models: output/${TEST_EXPNAME}/point_cloud/"
+echo ""
+echo "=== Saved Point Cloud ==="
+if [ -d "output/${TEST_EXPNAME}/point_cloud" ]; then
+    echo "Generated point clouds:"
+    ls -lh output/${TEST_EXPNAME}/point_cloud/ 2>/dev/null
+else
+    echo "No point cloud saved (training may have failed)"
+fi
 echo ""
 echo "=== 3D Visualization Files ==="
 if [ -d "output/${TEST_EXPNAME}/gradient_vis/gradient_3d" ]; then
@@ -163,6 +176,27 @@ if [ -d "output/${TEST_EXPNAME}/gradient_vis/gradient_3d" ]; then
         for f in $html_files; do
             echo "  firefox $f"
         done
+        echo ""
+        echo "Recommended files to view:"
+        echo "  - gradient_timeline.html (⭐ Time slider + Interactive controls)"
+        echo "  - grad3d_fine_iter_*.html (Snapshot during training)"
+        echo "  - gradient_3d_final.html (Final gradient)"
+        echo ""
+        echo "Timeline Visualization:"
+        echo "  Controls:"
+        echo "    • Point Size: Adjust point cloud size (0.1x - 5x)"
+        echo "    • Arrow Size: Adjust arrow display size (0.5x - 16x)"
+        echo "    • Visibility: Show Both / Points Only / Arrows Only"
+        echo "    • Time Slider: View gradients at different time points"
+        echo "    • Play/Pause: Automatic animation"
+        echo "  Visualization:"
+        echo "    • Arrow direction = Gradient direction (normalized)"
+        echo "    • Color (point & arrow) = Gradient magnitude"
+        echo "    • Arrow length = Uniform (adjustable via dropdown)"
+        echo ""
+        echo "Notes:"
+        echo "  - All settings persist during Play/Slider changes (JS-based)"
+        echo "  - Open browser console (F12) to see debug logs"
     else
         echo "No 3D visualization generated (check if Plotly is installed)"
     fi

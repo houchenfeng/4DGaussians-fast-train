@@ -423,29 +423,30 @@ class GradientTracker:
             print("  No non-zero gradients to visualize")
             return
         
-        # Downsample if too many points - 点云和箭头使用相同的采样
+        # 采样策略: 80% 最大梯度 + 20% 随机采样
         if len(xyz_filtered) > max_points:
-            # Sample points with highest gradients (top 70%) + random (bottom 30%)
             sorted_indices = np.argsort(grad_norm_filtered)[::-1]
-            top_k = int(max_points * 0.7)
-            top_indices = sorted_indices[:top_k]
             
-            # Random sample from remaining
-            remaining_indices = sorted_indices[top_k:]
-            random_count = max_points - top_k
-            if random_count > 0 and len(remaining_indices) > 0:
-                random_indices = np.random.choice(remaining_indices, 
-                                                min(random_count, len(remaining_indices)), 
-                                                replace=False)
-                selected_indices = np.concatenate([top_indices, random_indices])
+            # 80% 取最大梯度
+            n_top = int(max_points * 0.8)
+            top_indices = sorted_indices[:n_top]
+            
+            # 20% 随机采样（从剩余的点中）
+            n_random = max_points - n_top
+            remaining_indices = sorted_indices[n_top:]
+            if len(remaining_indices) > n_random:
+                random_indices = np.random.choice(remaining_indices, n_random, replace=False)
             else:
-                selected_indices = top_indices
+                random_indices = remaining_indices
+            
+            # 合并
+            selected_indices = np.concatenate([top_indices, random_indices])
             
             xyz_filtered = xyz_filtered[selected_indices]
             grad_filtered = grad_filtered[selected_indices]
             grad_norm_filtered = grad_norm_filtered[selected_indices]
             
-            print(f"  Downsampled to {len(xyz_filtered)} points")
+            print(f"  Stratified sampling to {len(xyz_filtered)} points (by gradient magnitude)")
         
         # 点云和箭头数量一致
         num_points = len(xyz_filtered)
@@ -683,21 +684,24 @@ class GradientTracker:
         if len(xyz_filtered) == 0:
             return
         
-        # Downsample for fast visualization
+        # 采样策略: 80% 最大梯度 + 20% 随机采样
         if len(xyz_filtered) > max_points:
             sorted_indices = np.argsort(grad_norm_filtered)[::-1]
-            top_k = int(max_points * 0.8)  # 80% highest gradients
-            top_indices = sorted_indices[:top_k]
             
-            remaining_indices = sorted_indices[top_k:]
-            random_count = max_points - top_k
-            if random_count > 0 and len(remaining_indices) > 0:
-                random_indices = np.random.choice(remaining_indices, 
-                                                min(random_count, len(remaining_indices)), 
-                                                replace=False)
-                selected_indices = np.concatenate([top_indices, random_indices])
+            # 80% 取最大梯度
+            n_top = int(max_points * 0.8)
+            top_indices = sorted_indices[:n_top]
+            
+            # 20% 随机采样（从剩余的点中）
+            n_random = max_points - n_top
+            remaining_indices = sorted_indices[n_top:]
+            if len(remaining_indices) > n_random:
+                random_indices = np.random.choice(remaining_indices, n_random, replace=False)
             else:
-                selected_indices = top_indices
+                random_indices = remaining_indices
+            
+            # 合并
+            selected_indices = np.concatenate([top_indices, random_indices])
             
             xyz_filtered = xyz_filtered[selected_indices]
             grad_filtered = grad_filtered[selected_indices]
@@ -809,4 +813,604 @@ class GradientTracker:
                                 f'grad3d_{stage}_iter_{iteration:06d}.html')
         fig.write_html(html_path)
         print(f"  Saved 3D gradient: {html_path}")
+    
+    def visualize_gradient_timeline(self, gaussians, scene, pipe, background, 
+                                   time_points=None, max_points=1000):
+        """
+        Visualize gradients at different time points with interactive slider
+        
+        Args:
+            gaussians: GaussianModel instance
+            scene: Scene instance
+            pipe: Pipeline parameters
+            background: Background color
+            time_points: List of time points to sample (default: [0, 0.1, ..., 0.9])
+            max_points: Maximum points to visualize
+        """
+        if not self.enable or not HAS_PLOTLY:
+            if not HAS_PLOTLY:
+                print("Plotly not available, skipping timeline visualization")
+            return
+        
+        print("\n=== Generating Gradient Timeline Visualization ===")
+        
+        # Default time points
+        if time_points is None:
+            time_points = [i * 0.1 for i in range(10)]  # [0, 0.1, 0.2, ..., 0.9]
+        
+        print(f"Computing gradients at {len(time_points)} time points...")
+        
+        # Get a representative camera
+        train_cams = scene.getTrainCameras()
+        if len(train_cams) == 0:
+            print("No training cameras available")
+            return
+        
+        # Use first camera as reference
+        viewpoint = train_cams[0]
+        
+        # Import render function
+        from gaussian_renderer import render
+        from utils.loss_utils import l1_loss
+        
+        # Store gradients and deformed positions for all time points
+        all_gradients = []
+        all_deformed_xyz = []
+        all_losses = []
+        
+        # Get base xyz and parameters
+        xyz_base = gaussians.get_xyz
+        scales = gaussians._scaling
+        rotations = gaussians._rotation
+        opacity = gaussians._opacity
+        shs = gaussians.get_features
+        
+        for t in time_points:
+            print(f"  Computing gradient at t={t:.1f}...", end=" ")
+            
+            # Clear previous gradients
+            gaussians.optimizer.zero_grad()
+            
+            # Set time
+            if hasattr(viewpoint, 'time'):
+                viewpoint.time = t
+            
+            # Forward pass
+            render_pkg = render(viewpoint, gaussians, pipe, background, 
+                              stage='fine', cam_type=scene.dataset_type)
+            rendered = render_pkg["render"]
+            
+            # Get ground truth
+            if scene.dataset_type != "PanopticSports":
+                gt = viewpoint.original_image.cuda()
+            else:
+                gt = viewpoint['image'].cuda()
+            
+            # Compute loss
+            loss = l1_loss(rendered, gt)
+            
+            # Backward pass
+            loss.backward()
+            
+            # Save gradient and compute deformed position
+            if gaussians._xyz.grad is not None:
+                xyz_grad = gaussians._xyz.grad.detach().clone().cpu().numpy()
+                
+                # Compute deformed position at time t (without gradient tracking)
+                with torch.no_grad():
+                    time_t = torch.tensor(t).cuda().repeat(xyz_base.shape[0], 1)
+                    xyz_deformed, _, _, _, _ = gaussians._deformation(
+                        xyz_base, scales, rotations, opacity, shs, time_t
+                    )
+                    xyz_deformed_np = xyz_deformed.cpu().numpy()
+                
+                all_gradients.append(xyz_grad)
+                all_deformed_xyz.append(xyz_deformed_np)
+                all_losses.append(loss.item())
+                print(f"Loss: {loss.item():.6f}, Grad norm: {np.linalg.norm(xyz_grad):.6e}")
+            else:
+                print("No gradient")
+                all_gradients.append(None)
+                all_deformed_xyz.append(None)
+                all_losses.append(None)
+            
+            # Clear gradients
+            gaussians.optimizer.zero_grad()
+        
+        # Filter out None gradients
+        valid_indices = [i for i, g in enumerate(all_gradients) if g is not None]
+        if len(valid_indices) == 0:
+            print("No valid gradients computed")
+            return
+        
+        print(f"\nCreating interactive timeline with {len(valid_indices)} time points...")
+        
+        # 统计变形量（调试信息）
+        xyz_base_np = gaussians.get_xyz.detach().cpu().numpy()
+        print(f"\nDeformation statistics (checking if scene is dynamic):")
+        for idx in valid_indices:
+            t = time_points[idx]
+            xyz_def = all_deformed_xyz[idx]
+            deformation = xyz_def - xyz_base_np
+            deform_norm = np.linalg.norm(deformation, axis=1)
+            print(f"  t={t:.1f}: Deform mean={deform_norm.mean():.6f}, max={deform_norm.max():.6f}, "
+                  f"median={np.median(deform_norm):.6f}, nonzero={np.sum(deform_norm > 1e-6)}/{len(deform_norm)}")
+        
+        # 检查是否有显著变形
+        max_deform = max([np.linalg.norm(all_deformed_xyz[idx] - xyz_base_np, axis=1).max() 
+                         for idx in valid_indices])
+        if max_deform < 0.001:
+            print(f"\n⚠️  WARNING: Maximum deformation is very small ({max_deform:.6f})")
+            print(f"  This might be a static scene or deformation network hasn't learned yet")
+            print(f"  Scene maxtime: {scene.maxtime if hasattr(scene, 'maxtime') else 'unknown'}")
+        
+        # 计算所有时刻的统一显示范围（重要！）
+        all_xyz_combined = []
+        for idx in valid_indices:
+            all_xyz_combined.append(all_deformed_xyz[idx])
+        all_xyz_combined = np.concatenate(all_xyz_combined, axis=0)
+        
+        # 计算全局bbox（所有时刻的xyz范围）
+        xyz_min = all_xyz_combined.min(axis=0)
+        xyz_max = all_xyz_combined.max(axis=0)
+        xyz_center = (xyz_min + xyz_max) / 2
+        xyz_range = (xyz_max - xyz_min).max() * 0.6  # 使用最大范围的60%作为统一范围
+        
+        print(f"  Unified scene range: center={xyz_center}, range={xyz_range:.3f}")
+        
+        # 计算统一的箭头scale（使用全局scene范围）
+        unified_arrow_scale = xyz_range * 0.02  # 所有时刻使用相同的箭头scale
+        print(f"  Unified arrow scale: {unified_arrow_scale:.6f}")
+        
+        # 计算所有时刻的梯度范围（用于统一颜色映射）
+        all_grad_norms = []
+        for idx in valid_indices:
+            grad = all_gradients[idx]
+            grad_norm = np.linalg.norm(grad, axis=1)
+            all_grad_norms.append(grad_norm[grad_norm > 1e-10])
+        
+        all_grad_norms = np.concatenate(all_grad_norms)
+        grad_norm_log_min = np.log10(all_grad_norms.min() + 1e-10)
+        grad_norm_log_max = np.log10(all_grad_norms.max() + 1e-10)
+        
+        print(f"  Unified color range: log10(grad) in [{grad_norm_log_min:.2f}, {grad_norm_log_max:.2f}]")
+        
+        # Create Plotly figure with frames
+        frames = []
+        
+        for idx in valid_indices:
+            t = time_points[idx]
+            grad = all_gradients[idx]
+            xyz_deformed = all_deformed_xyz[idx]  # 使用变形后的位置
+            loss = all_losses[idx]
+            
+            grad_norm = np.linalg.norm(grad, axis=1)
+            
+            # Filter zero gradients
+            nonzero_mask = grad_norm > 1e-10
+            xyz_filtered = xyz_deformed[nonzero_mask]  # 使用变形后的位置
+            grad_filtered = grad[nonzero_mask]
+            grad_norm_filtered = grad_norm[nonzero_mask]
+            
+            # 采样策略: 80% 最大梯度 + 20% 随机采样
+            if len(xyz_filtered) > max_points:
+                sorted_indices = np.argsort(grad_norm_filtered)[::-1]
+                
+                # 80% 取最大梯度
+                n_top = int(max_points * 0.8)
+                top_indices = sorted_indices[:n_top]
+                
+                # 20% 随机采样（从剩余的点中）
+                n_random = max_points - n_top
+                remaining_indices = sorted_indices[n_top:]
+                if len(remaining_indices) > n_random:
+                    random_indices = np.random.choice(remaining_indices, n_random, replace=False)
+                else:
+                    random_indices = remaining_indices
+                
+                # 合并
+                selected_indices = np.concatenate([top_indices, random_indices])
+                
+                xyz_filtered = xyz_filtered[selected_indices]
+                grad_filtered = grad_filtered[selected_indices]
+                grad_norm_filtered = grad_norm_filtered[selected_indices]
+            
+            # Color by gradient magnitude
+            grad_norm_log = np.log10(grad_norm_filtered + 1e-10)
+            
+            # Arrow vectors - 统一长度，仅显示方向
+            # 归一化梯度向量
+            grad_norm_filtered_safe = grad_norm_filtered + 1e-10
+            grad_dir = grad_filtered / grad_norm_filtered_safe[:, np.newaxis]
+            
+            # Create frame data
+            frame_data = [
+                go.Scatter3d(
+                    x=xyz_filtered[:, 0],
+                    y=xyz_filtered[:, 1],
+                    z=xyz_filtered[:, 2],
+                    mode='markers',
+                    marker=dict(
+                        color=grad_norm_log, 
+                        colorscale='Hot',
+                        sizemode='diameter',
+                        cmin=grad_norm_log_min,  # 统一的颜色范围
+                        cmax=grad_norm_log_max
+                    ),
+                    name='Points',
+                    text=[f'{g:.2e}' for g in grad_norm_filtered],
+                    hovertemplate='Pos: (%{x:.2f}, %{y:.2f}, %{z:.2f})<br>Grad: %{text}<extra></extra>'
+                ),
+                # 箭头：统一长度，方向表示梯度方向，颜色表示梯度大小
+                go.Cone(
+                    x=xyz_filtered[:, 0],
+                    y=xyz_filtered[:, 1],
+                    z=xyz_filtered[:, 2],
+                    u=grad_dir[:, 0],  # 使用归一化梯度向量
+                    v=grad_dir[:, 1],
+                    w=grad_dir[:, 2],
+                    colorscale='Hot',
+                    sizemode='scaled',
+                    sizeref=unified_arrow_scale * 0.5,  # 统一箭头大小
+                    showscale=False,
+                    name='Arrows'
+                )
+            ]
+            
+            # Create frame with annotation showing point count
+            frame = go.Frame(
+                data=frame_data,
+                name=f't_{t:.1f}',
+                layout=go.Layout(
+                    annotations=[
+                        dict(
+                            text=f't={t:.1f} | Loss={loss:.6f} | Points={len(xyz_filtered)}',
+                            xref='paper', yref='paper',
+                            x=0.5, y=1.05,
+                            xanchor='center', yanchor='bottom',
+                            showarrow=False,
+                            font=dict(size=14, color='blue')
+                        )
+                    ]
+                )
+            )
+            frames.append(frame)
+        
+        # Create initial figure with first frame
+        first_idx = valid_indices[0]
+        t_first = time_points[first_idx]
+        loss_first = all_losses[first_idx]
+        
+        # Recompute first frame data for initial display
+        grad_first = all_gradients[first_idx]
+        xyz_deformed_first = all_deformed_xyz[first_idx]  # 使用变形后的位置
+        grad_norm_first = np.linalg.norm(grad_first, axis=1)
+        nonzero_mask = grad_norm_first > 1e-10
+        xyz_init = xyz_deformed_first[nonzero_mask]  # 使用变形后的位置
+        grad_init = grad_first[nonzero_mask]
+        grad_norm_init = grad_norm_first[nonzero_mask]
+        
+        if len(xyz_init) > max_points:
+            sorted_indices = np.argsort(grad_norm_init)[::-1]
+            
+            # 80% 取最大梯度
+            n_top = int(max_points * 0.8)
+            top_indices = sorted_indices[:n_top]
+            
+            # 20% 随机采样（从剩余的点中）
+            n_random = max_points - n_top
+            remaining_indices = sorted_indices[n_top:]
+            if len(remaining_indices) > n_random:
+                random_indices = np.random.choice(remaining_indices, n_random, replace=False)
+            else:
+                random_indices = remaining_indices
+            
+            # 合并
+            selected_indices = np.concatenate([top_indices, random_indices])
+            
+            xyz_init = xyz_init[selected_indices]
+            grad_init = grad_init[selected_indices]
+            grad_norm_init = grad_norm_init[selected_indices]
+        
+        grad_norm_log_init = np.log10(grad_norm_init + 1e-10)
+        
+        # 归一化初始梯度
+        grad_norm_init_safe = grad_norm_init + 1e-10
+        grad_dir_init = grad_init / grad_norm_init_safe[:, np.newaxis]
+        
+        # 初始figure
+        fig = go.Figure(
+            data=[
+                go.Scatter3d(
+                    x=xyz_init[:, 0], y=xyz_init[:, 1], z=xyz_init[:, 2],
+                    mode='markers',
+                    marker=dict(
+                        size=1,  # 默认点大小
+                        color=grad_norm_log_init, 
+                        colorscale='Hot',
+                        colorbar=dict(title="log10(Grad)", x=1.02),
+                        sizemode='diameter',
+                        cmin=grad_norm_log_min,  # 统一的颜色范围
+                        cmax=grad_norm_log_max
+                    ),
+                    name='Points'
+                ),
+                # 箭头：统一长度，方向表示梯度方向，颜色表示梯度大小
+                go.Cone(
+                    x=xyz_init[:, 0], y=xyz_init[:, 1], z=xyz_init[:, 2],
+                    u=grad_dir_init[:, 0],  # 使用归一化梯度向量
+                    v=grad_dir_init[:, 1],
+                    w=grad_dir_init[:, 2],
+                    colorscale='Hot',
+                    sizemode='scaled',
+                    sizeref=unified_arrow_scale * 0.5,  # 统一箭头大小
+                    showscale=False,
+                    name='Arrows'
+                )
+            ],
+            frames=frames
+        )
+        
+        # Create slider
+        sliders = [dict(
+            active=0,
+            yanchor="top",
+            y=0.02,
+            xanchor="left",
+            x=0.05,
+            currentvalue=dict(
+                prefix="Time: t=",
+                visible=True,
+                xanchor="left"
+            ),
+            transition=dict(duration=300),
+            pad=dict(b=10, t=50),
+            len=0.9,
+            steps=[dict(
+                args=[[f.name], dict(
+                    frame=dict(duration=300, redraw=True),
+                    mode="immediate",
+                    transition=dict(duration=300)
+                )],
+                label=f"{time_points[idx]:.1f}",
+                method="animate"
+            ) for idx, f in zip(valid_indices, frames)]
+        )]
+        
+        # 计算初始帧的实际点数
+        initial_point_count = len(xyz_init)
+        
+        # Update layout with unified scene range
+        fig.update_layout(
+            title=f'Gradient Timeline Visualization<br>' +
+                  f'<sub>Point positions = xyz_base + Δxyz(t) | Arrows = gradient direction | Drag slider to change time</sub>',
+            annotations=[
+                dict(
+                    text=f't={t_first:.1f} | Loss={loss_first:.6f} | Points={initial_point_count}',
+                    xref='paper', yref='paper',
+                    x=0.5, y=1.05,
+                    xanchor='center', yanchor='bottom',
+                    showarrow=False,
+                    font=dict(size=14, color='blue')
+                )
+            ],
+            scene=dict(
+                xaxis_title='X', 
+                yaxis_title='Y', 
+                zaxis_title='Z',
+                aspectmode='cube',  # 保持各轴比例一致
+                # 设置统一的显示范围
+                xaxis=dict(range=[xyz_center[0]-xyz_range, xyz_center[0]+xyz_range]),
+                yaxis=dict(range=[xyz_center[1]-xyz_range, xyz_center[1]+xyz_range]),
+                zaxis=dict(range=[xyz_center[2]-xyz_range, xyz_center[2]+xyz_range]),
+                # 固定相机位置
+                camera=dict(
+                    eye=dict(x=1.5, y=1.5, z=1.5),
+                    center=dict(x=0, y=0, z=0),
+                    up=dict(x=0, y=0, z=1),
+                    projection=dict(type='perspective')
+                )
+            ),
+            width=1400,
+            height=900,
+            sliders=sliders,
+            updatemenus=[
+                # Point size control
+                dict(
+                    buttons=[
+                        dict(label="Point: 0.1",
+                             method="restyle",
+                             args=[{"marker.size": 0.1}, [0]]),
+                        dict(label="Point: 0.5",
+                             method="restyle",
+                             args=[{"marker.size": 0.5}, [0]]),
+                        dict(label="Point: 1",
+                             method="restyle",
+                             args=[{"marker.size": 1}, [0]]),
+                        dict(label="Point: 2",
+                             method="restyle",
+                             args=[{"marker.size": 2}, [0]]),
+                        dict(label="Point: 3",
+                             method="restyle",
+                             args=[{"marker.size": 3}, [0]]),
+                        dict(label="Point: 5",
+                             method="restyle",
+                             args=[{"marker.size": 5}, [0]]),
+                    ],
+                    direction="down",
+                    pad={"r": 10, "t": 10},
+                    showactive=True,
+                    active=2,  # 默认选中 Point: 1
+                    x=0.02,
+                    xanchor="left",
+                    y=0.98,
+                    yanchor="top",
+                    bgcolor="white",
+                    bordercolor="gray",
+                    borderwidth=1
+                ),
+                # Arrow size control (统一大小调整)
+                dict(
+                    buttons=[
+                        dict(label="Arrow: 0.5x",
+                             method="restyle",
+                             args=[{"sizeref": unified_arrow_scale * 0.25}, [1]]),
+                        dict(label="Arrow: 1x",
+                             method="restyle",
+                             args=[{"sizeref": unified_arrow_scale * 0.5}, [1]]),
+                        dict(label="Arrow: 2x",
+                             method="restyle",
+                             args=[{"sizeref": unified_arrow_scale * 1.0}, [1]]),
+                        dict(label="Arrow: 4x",
+                             method="restyle",
+                             args=[{"sizeref": unified_arrow_scale * 2.0}, [1]]),
+                        dict(label="Arrow: 8x",
+                             method="restyle",
+                             args=[{"sizeref": unified_arrow_scale * 4.0}, [1]]),
+                        dict(label="Arrow: 16x",
+                             method="restyle",
+                             args=[{"sizeref": unified_arrow_scale * 8.0}, [1]]),
+                    ],
+                    direction="down",
+                    pad={"r": 10, "t": 10},
+                    showactive=True,
+                    active=1,  # 默认选中 Arrow: 1x
+                    x=0.18,
+                    xanchor="left",
+                    y=0.98,
+                    yanchor="top",
+                    bgcolor="white",
+                    bordercolor="gray",
+                    borderwidth=1
+                ),
+                # Toggle visibility
+                dict(
+                    buttons=[
+                        dict(label="Show Both",
+                             method="restyle",
+                             args=[{"visible": True}, [0, 1]]),
+                        dict(label="Points Only",
+                             method="update",
+                             args=[{"visible": [True, False]}]),
+                        dict(label="Arrows Only",
+                             method="restyle",
+                             args=[{"visible": [False, True]}]),
+                    ],
+                    direction="down",
+                    pad={"r": 10, "t": 10},
+                    showactive=True,
+                    active=0,  # 默认选中 Show Both
+                    x=0.38,
+                    xanchor="left",
+                    y=0.98,
+                    yanchor="top",
+                    bgcolor="white",
+                    bordercolor="gray",
+                    borderwidth=1
+                ),
+                # Play/Pause control
+                dict(
+                    buttons=[
+                        dict(label="▶ Play", method="animate",
+                             args=[None, dict(frame=dict(duration=500, redraw=True),
+                                            fromcurrent=True,
+                                            mode="immediate")]),
+                        dict(label="⏸ Pause", method="animate",
+                             args=[[None], dict(frame=dict(duration=0, redraw=False),
+                                              mode="immediate")])
+                    ],
+                    direction="left",
+                    pad=dict(r=10, t=87),
+                    showactive=False,
+                    type="buttons",
+                    x=0.1, xanchor="right", y=0, yanchor="top"
+                )
+            ]
+        )
+        
+        # Save
+        html_path = os.path.join(self.gradient_dir, 'gradient_3d', 
+                                'gradient_timeline.html')
+        fig.write_html(html_path, include_plotlyjs='cdn')
+        
+        # 添加自定义JavaScript来保持样式
+        with open(html_path, 'r', encoding='utf-8') as f:
+            html_content = f.read()
+        
+        custom_js = f"""
+        <script>
+        document.addEventListener('DOMContentLoaded', function() {{
+            var gd = document.getElementsByClassName('plotly-graph-div')[0];
+            var currentPointSize = 1;
+            var currentArrowScale = {unified_arrow_scale * 0.5};
+            var isRestoring = false;  // 防止重复恢复
+            
+            // 监听restyle事件（点云大小、箭头大小调整）
+            gd.on('plotly_restyle', function(data) {{
+                if (data[0]['marker.size'] !== undefined) {{
+                    currentPointSize = data[0]['marker.size'];
+                    console.log('Point size changed to:', currentPointSize);
+                }}
+                if (data[0]['sizeref'] !== undefined) {{
+                    currentArrowScale = data[0]['sizeref'];
+                    console.log('Arrow scale changed to:', currentArrowScale);
+                }}
+            }});
+            
+            // 恢复样式的函数
+            function restoreStyles() {{
+                if (isRestoring) return;
+                isRestoring = true;
+                
+                setTimeout(function() {{
+                    // 恢复点云大小
+                    Plotly.restyle(gd, {{'marker.size': currentPointSize}}, [0]);
+                    // 恢复箭头大小
+                    Plotly.restyle(gd, {{'sizeref': currentArrowScale}}, [1]);
+                    console.log('Styles restored - Point:', currentPointSize, 'Arrow:', currentArrowScale);
+                    isRestoring = false;
+                }}, 50);
+            }}
+            
+            // 监听动画帧变化（Play按钮和Slider都会触发）
+            gd.on('plotly_animated', function() {{
+                restoreStyles();
+            }});
+            
+            // 监听slider变化（额外保险）
+            gd.on('plotly_sliderchange', function() {{
+                console.log('Slider changed');
+                restoreStyles();
+            }});
+        }});
+        </script>
+        """
+        
+        # 在</body>前插入JavaScript
+        html_content = html_content.replace('</body>', custom_js + '\n</body>')
+        
+        with open(html_path, 'w', encoding='utf-8') as f:
+            f.write(html_content)
+        
+        print(f"\n✓ Timeline visualization saved: {html_path}")
+        print(f"  Time points: {len(valid_indices)}")
+        print(f"  Points per frame: ~{max_points}")
+        print(f"  Interactive controls:")
+        print(f"    1. Point Size: Top-left dropdown (0.1x - 5x)")
+        print(f"    2. Arrow Size: Second dropdown (0.5x - 16x)")
+        print(f"    3. Visibility: Third dropdown (Both/Points/Arrows)")
+        print(f"    4. Time Slider: Bottom slider to change time")
+        print(f"    5. Play/Pause: Bottom-left buttons")
+        print(f"  Visualization:")
+        print(f"    • Arrow direction: Gradient direction (normalized)")
+        print(f"    • Arrow & Point color: Gradient magnitude (log scale, hot colormap)")
+        print(f"    • Arrow length: Uniform (adjustable via dropdown)")
+        print(f"  Features:")
+        print(f"    ✓ Style persistence during animation (JS-based)")
+        print(f"    ✓ Perspective projection with optimized clipping")
+        print(f"    ✓ Unified color mapping across all time points")
+        print(f"    ✓ Point cloud position changes with deformation at each time")
+        print(f"  Debug:")
+        print(f"    • Open browser console (F12) to see debug logs")
+        print(f"  Open in browser: firefox {html_path}")
 
