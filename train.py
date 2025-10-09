@@ -42,7 +42,7 @@ except ImportError:
     TENSORBOARD_FOUND = False
 def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_iterations, 
                          checkpoint_iterations, checkpoint, debug_from,
-                         gaussians, scene, stage, tb_writer, train_iter, timer, detailed_timer=None, debug_mode=False, gradient_tracker=None):
+                         gaussians, scene, stage, tb_writer, train_iter, timer, detailed_timer=None, debug_mode=False, gradient_tracker=None, gradient_3d_interval=1000):
     first_iter = 0
 
     gaussians.training_setup(opt)
@@ -272,9 +272,13 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
             if iteration % 10 == 0:  # 每10次迭代记录一次
                 gradient_tracker.record_gradients(gaussians, iteration, viewspace_point_tensor_grad, stage=stage)
             
-            # 定期保存可视化
+            # 定期保存2D梯度曲线
             if iteration % 100 == 0 and iteration > 0:
                 gradient_tracker.visualize_gradient_curves(iteration, save=True)
+            
+            # 定期保存3D梯度可视化（使用参数控制频率）
+            if iteration % gradient_3d_interval == 0 and iteration > 0:
+                gradient_tracker.visualize_gradient_3d_snapshot(gaussians, iteration, stage)
             
         # 结束损失计算计时
         if detailed_timer:
@@ -407,10 +411,12 @@ def training(dataset, hyper, opt, pipe, testing_iterations, saving_iterations, c
     
     # 初始化梯度追踪器
     enable_gradient_vis = getattr(args, 'enable_gradient_vis', False)
+    gradient_3d_interval = getattr(args, 'gradient_3d_interval', 1000)
     gradient_tracker = GradientTracker(output_dir=args.model_path, enable=enable_gradient_vis)
     
     if enable_gradient_vis:
         print(f"Gradient visualization enabled, saving to: {os.path.join(args.model_path, 'gradient_vis')}")
+        print(f"  3D gradient save interval: every {gradient_3d_interval} iterations")
     
     scene = Scene(dataset, gaussians, load_coarse=None)
     try:
@@ -426,10 +432,10 @@ def training(dataset, hyper, opt, pipe, testing_iterations, saving_iterations, c
     
     scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_iterations,
                              checkpoint_iterations, checkpoint, debug_from,
-                             gaussians, scene, "coarse", tb_writer, opt.coarse_iterations, timer, detailed_timer, debug_mode, gradient_tracker)
+                             gaussians, scene, "coarse", tb_writer, opt.coarse_iterations, timer, detailed_timer, debug_mode, gradient_tracker, gradient_3d_interval)
     scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_iterations,
                          checkpoint_iterations, checkpoint, debug_from,
-                         gaussians, scene, "fine", tb_writer, opt.iterations, timer, detailed_timer, debug_mode, gradient_tracker)
+                         gaussians, scene, "fine", tb_writer, opt.iterations, timer, detailed_timer, debug_mode, gradient_tracker, gradient_3d_interval)
     
     # 训练结束后保存计时报告和训练日志
     detailed_timer.save_timing_report()
@@ -439,6 +445,10 @@ def training(dataset, hyper, opt, pipe, testing_iterations, saving_iterations, c
     # 生成梯度分析报告
     if enable_gradient_vis:
         gradient_tracker.generate_report()
+        
+        # 生成3D梯度可视化
+        print("\n=== Generating 3D Gradient Visualizations ===")
+        gradient_tracker.visualize_gradient_3d(gaussians, stage='final', max_points=5000)
 
 def prepare_output_and_logger(expname):    
     if not args.model_path:
@@ -544,6 +554,7 @@ if __name__ == "__main__":
     parser.add_argument("--debug_mode", action="store_true", default=False, help="启用debug模式，保存训练和GT图像的拼接图")
     parser.add_argument("--enable_gradient_vis", action="store_true", default=False, help="启用梯度可视化")
     parser.add_argument("--gradient_vis_interval", type=int, default=10, help="梯度记录间隔")
+    parser.add_argument("--gradient_3d_interval", type=int, default=1000, help="3D梯度可视化保存间隔")
     
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)

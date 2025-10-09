@@ -24,7 +24,7 @@ ModelHiddenParams = dict(
 
 OptimizationParams = dict(
     dataloader=True,
-    iterations = 100,         # 极少的迭代次数
+    iterations = 300,         # 极少的迭代次数
     batch_size=1,           # 最小批次
     coarse_iterations = 100,   # 极少的粗调迭代
     densify_until_iter = 8,

@@ -7,6 +7,7 @@ echo "=== 极速调试测试模式 ==="
 echo "训练配置: 100次迭代 (100粗调 + 100精细调)"
 echo "预期训练时间: 30秒-1分钟"
 echo "用途: 验证代码修改，测试计时功能"
+echo "梯度可视化: 启用 (每100次保存3D可视化)"
 echo "=========================="
 
 # 手动指定数字，端口、IP和实验名都基于这个数字
@@ -43,7 +44,8 @@ echo ""
 # 记录开始时间
 start_time=$(date +%s)
 
-CUDA_VISIBLE_DEVICES=0 python train.py \
+# CUDA_VISIBLE_DEVICES=0 conda run -n 4dgs --no-capture-output python train.py \
+CUDA_VISIBLE_DEVICES=0  python train.py \
     -s "${TEST_DATASET}" \
     --port ${TEST_PORT} \
     --ip ${TEST_IP} \
@@ -51,6 +53,7 @@ CUDA_VISIBLE_DEVICES=0 python train.py \
     --configs "${TEST_CONFIG}" \
     --debug_mode \
     --enable_gradient_vis \
+    --gradient_3d_interval 100 \
     
 
 # 计算实际耗时
@@ -143,5 +146,27 @@ fi
 
 echo ""
 echo "调试测试完成！"
-echo "如需查看详细结果:"
-echo "cat output/${TEST_EXPNAME}/timing_report.json"
+echo ""
+echo "=== Results Location ==="
+echo "Timing report: output/${TEST_EXPNAME}/timing_report.json"
+echo "Gradient curves: output/${TEST_EXPNAME}/gradient_vis/gradient_curves/"
+echo "3D visualization: output/${TEST_EXPNAME}/gradient_vis/gradient_3d/"
+echo ""
+echo "=== 3D Visualization Files ==="
+if [ -d "output/${TEST_EXPNAME}/gradient_vis/gradient_3d" ]; then
+    html_files=$(ls output/${TEST_EXPNAME}/gradient_vis/gradient_3d/*.html 2>/dev/null)
+    if [ -n "$html_files" ]; then
+        echo "Generated interactive 3D visualizations:"
+        ls -lh output/${TEST_EXPNAME}/gradient_vis/gradient_3d/*.html 2>/dev/null
+        echo ""
+        echo "Open in browser:"
+        for f in $html_files; do
+            echo "  firefox $f"
+        done
+    else
+        echo "No 3D visualization generated (check if Plotly is installed)"
+    fi
+else
+    echo "No 3D visualization generated"
+fi
+echo ""
