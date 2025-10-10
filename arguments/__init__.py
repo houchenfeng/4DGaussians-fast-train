@@ -58,6 +58,7 @@ class ModelParams(ParamGroup):
         self.add_points=False
         self.extension=".png"
         self.llffhold=8
+        self.use_grid_pruning=False  # Instant4D网格剪枝，减少92%点云，4倍训练加速
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):

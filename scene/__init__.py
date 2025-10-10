@@ -20,6 +20,7 @@ from arguments import ModelParams
 from utils.camera_utils import cameraList_from_camInfos, camera_to_JSON
 from torch.utils.data import Dataset
 from scene.dataset_readers import add_points
+from utils.grid_pruning import grid_pruning
 class Scene:
 
     gaussians : GaussianModel
@@ -96,7 +97,26 @@ class Scene:
                                                     "iteration_" + str(self.loaded_iter),
                                                    ))
         else:
-            self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent, self.maxtime)
+            # 应用网格剪枝 (Grid Pruning) - Instant4D 加速策略
+            # 减少92%点云数量，4倍训练加速，6倍渲染提升
+            if args.use_grid_pruning:
+                print("\n[Instant4D Grid Pruning] 开始应用网格剪枝...")
+                # 获取训练相机用于计算自适应体素大小
+                try:
+                    train_cams = scene_info.train_cameras[:10] if hasattr(scene_info.train_cameras, '__getitem__') else []
+                except:
+                    train_cams = None
+                
+                pruned_pcd = grid_pruning(
+                    scene_info.point_cloud, 
+                    cameras=train_cams,
+                    use_adaptive=True,
+                    static_scale=4.0,  # 论文中静态区域使用4
+                    dynamic_scale=3.0   # 论文中动态区域使用3
+                )
+                self.gaussians.create_from_pcd(pruned_pcd, self.cameras_extent, self.maxtime)
+            else:
+                self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent, self.maxtime)
 
     def save(self, iteration, stage):
         if stage == "coarse":
