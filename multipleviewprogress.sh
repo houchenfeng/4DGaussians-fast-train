@@ -26,3 +26,5 @@ cp ./colmap_tmp/poses_bounds.npy ./data/multipleview/$workdir/poses_bounds_multi
 rm -rf ./colmap_tmp
 rm -rf ./LLFF
 
+python scripts/downsample_point.py /home/lt/2024/data/N3D/multipleview/sear_steak/points3D_multipleview_vggt.ply /home/lt/2024/data/N3D/multipleview/sear_steak/points3D_multipleview_vggt2.ply
+python LLFF/imgs2poses.py /home/lt/2024/data/N3D/multipleview/sear_steak/colmap_vggt

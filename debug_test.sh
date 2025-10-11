@@ -1,206 +1,93 @@
 #!/bin/bash
+# Debug测试 - 快速验证各模块功能
+# 配置继承自 debug_test.py (少量迭代)
 
-# 极速调试测试脚本 - 仅用于验证代码修改
-# 10次迭代，预期训练时间: 30秒-1分钟
+set -e
 
-echo "=== 极速调试测试模式 ==="
-echo "训练配置: 300次迭代 (100粗调 + 300精细调)"
-echo "预期训练时间: 30秒-1分钟"
-echo "用途: 验证代码修改，测试计时功能"
-echo "梯度可视化: 启用 (每100次保存3D可视化)"
-echo "=========================="
+CONDA_ENV="4dgs"
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate $CONDA_ENV
 
-# 手动指定数字，端口、IP和实验名都基于这个数字
-# 使用方法: ./debug_test.sh [NUMBER] [MAX_POINTS]
-# 例如: ./debug_test.sh 1  (端口6019+1=6020, IP 127.0.0.1, 实验名debug_test_1, 默认2000点)
-# 例如: ./debug_test.sh 5 5000  (端口6019+5=6024, IP 127.0.0.5, 实验名debug_test_5, 5000点)
+DATA_PATH="/home/lt/2024/data/N3D/multipleview/sear_steak"
+GPU=1
 
-NUMBER=${1:-1}        # 默认数字1，可通过第一个参数指定
-MAX_POINTS=${2:-10000} # 默认10000点，可通过第二个参数指定
-TEST_PORT=$((6019 + NUMBER))  # 端口 = 6019 + 数字
-TEST_IP="127.0.0.${NUMBER}"   # IP = 127.0.0.数字
-TEST_EXPNAME="debug_test_${NUMBER}"  # 实验名 = debug_test_数字
-
-# 设置测试参数
-TEST_DATASET="/home/lt/2024/data/N3D/multipleview/sear_steak"
-
-echo "使用数字: ${NUMBER}"
-echo "使用端口: ${TEST_PORT} (6019 + ${NUMBER})"
-echo "使用IP: ${TEST_IP}"
-echo "实验名: ${TEST_EXPNAME}"
-echo "3D可视化最大点数: ${MAX_POINTS}"
-
-TEST_CONFIG="arguments/dynerf/debug_test.py"
-
-# 清理之前的测试结果
-echo "清理之前的测试结果..."
-rm -rf "output/${TEST_EXPNAME}"
-
-# 开始极速测试训练
-echo "开始极速调试测试..."
-echo "数据集: ${TEST_DATASET}"
-echo "配置: ${TEST_CONFIG}"
-echo "输出目录: output/${TEST_EXPNAME}"
+echo "=========================================="
+echo "Instant4D模块Debug测试"
+echo "=========================================="
+echo "配置基础: debug_test.py (少量迭代)"
+echo "GPU: $GPU"
 echo ""
 
-# 记录开始时间
-start_time=$(date +%s)
-
-# CUDA_VISIBLE_DEVICES=0 conda run -n 4dgs --no-capture-output python train.py \
-CUDA_VISIBLE_DEVICES=0  python train.py \
-    -s "${TEST_DATASET}" \
-    --port ${TEST_PORT} \
-    --ip ${TEST_IP} \
-    --expname "${TEST_EXPNAME}" \
-    --configs "${TEST_CONFIG}" \
-    --debug_mode \
-    --enable_gradient_vis \
-    --gradient_3d_interval 100 \
-    --gradient_max_points ${MAX_POINTS} \
-    --save_iterations 300 \
-    
-
-# 计算实际耗时
-end_time=$(date +%s)
-actual_time=$((end_time - start_time))
-
-echo ""
-echo "=== 极速调试测试完成 ==="
-echo "实际耗时: ${actual_time} 秒"
-echo "检查输出目录: output/${TEST_EXPNAME}"
+# 测试1: Baseline
+echo "[1/5] Baseline"
+T1=$(date +%s)
+CUDA_VISIBLE_DEVICES=$GPU python train.py -s "$DATA_PATH" --port 6101 \
+    --expname "debug/baseline" --configs arguments/dynerf/debug_baseline.py \
+    --quiet 2>&1 | tee /tmp/debug_baseline.log
+T1_TIME=$(( $(date +%s) - T1 ))
+P1=$(grep "Number of points" /tmp/debug_baseline.log | tail -1 | awk '{print $NF}')
+echo "✓ ${T1_TIME}s, 点数: $P1"
 echo ""
 
-# 显示计时报告摘要
-if [ -f "output/${TEST_EXPNAME}/timing_report.json" ]; then
-    echo "=== 计时摘要 ==="
-    python3 -c "
-import json
-import sys
-import os
+# 测试2: 网格剪枝
+echo "[2/5] 网格剪枝"
+T2=$(date +%s)
+CUDA_VISIBLE_DEVICES=$GPU python train.py -s "$DATA_PATH" --port 6102 \
+    --expname "debug/pruning" --configs arguments/dynerf/debug_pruning.py \
+    --quiet 2>&1 | tee /tmp/debug_pruning.log
+T2_TIME=$(( $(date +%s) - T2 ))
+P2=$(grep "Number of points" /tmp/debug_pruning.log | tail -1 | awk '{print $NF}')
+echo "✓ ${T2_TIME}s, 点数: $P2"
+grep "\[Grid Pruning\]" /tmp/debug_pruning.log | head -3
+echo ""
 
-try:
-    file_path = 'output/${TEST_EXPNAME}/timing_report.json'
-    print(f'正在读取文件: {file_path}')
-    
-    if not os.path.exists(file_path):
-        print(f'错误: 文件不存在 {file_path}')
-        sys.exit(1)
-    
-    with open(file_path, 'r', encoding='utf-8') as f:
-        data = json.load(f)
-    
-    print(f'总训练时间: {data.get(\"total_training_time\", 0):.1f} 秒')
-    
-    if 'training_logs' in data and data['training_logs']:
-        logs = data['training_logs']
-        print(f'训练日志条目: {len(logs)}')
-        if logs:
-            final_log = logs[-1]
-            print(f'最终损失: {final_log.get(\"loss\", \"N/A\"):.6f}')
-            if 'psnr' in final_log and final_log['psnr'] is not None:
-                print(f'最终PSNR: {final_log[\"psnr\"]:.2f}')
-    
-    print('\\n各阶段耗时:')
-    detailed_timings = data.get('detailed_timings', {})
-    for category, timings in detailed_timings.items():
-        if isinstance(timings, dict):
-            print(f'  {category}:')
-            for name, timing in timings.items():
-                if isinstance(timing, dict) and 'total_elapsed' in timing:
-                    print(f'    {name}: {timing[\"total_elapsed\"]:.2f}s ({timing.get(\"percentage\", 0):.1f}%)')
-        else:
-            # 兼容旧的格式
-            if 'total_elapsed' in timings:
-                print(f'  {category}: {timings[\"total_elapsed\"]:.2f}s ({timings.get(\"percentage\", 0):.1f}%)')
-    
-    # 显示每轮用时统计
-    per_iteration = data.get('per_iteration_timings', {})
-    if per_iteration:
-        print('\\n每轮用时统计:')
-        iteration_times = []
-        for iter_num, timings in per_iteration.items():
-            if isinstance(timings, dict):
-                for key, time_val in timings.items():
-                    if key.endswith('_total'):
-                        iteration_times.append((int(iter_num), time_val))
-                        break
-        
-        if iteration_times:
-            iteration_times.sort(key=lambda x: x[0])
-            avg_time = sum(time for _, time in iteration_times) / len(iteration_times)
-            min_time = min(time for _, time in iteration_times)
-            max_time = max(time for _, time in iteration_times)
-            print(f'  平均每轮用时: {avg_time:.3f}s')
-            print(f'  最快轮次: {min_time:.3f}s, 最慢轮次: {max_time:.3f}s')
-            print(f'  总轮次数: {len(iteration_times)}')
-                
-except json.JSONDecodeError as e:
-    print(f'JSON解析错误: {e}')
-    print('文件内容可能损坏或格式不正确')
-except FileNotFoundError as e:
-    print(f'文件未找到: {e}')
-except Exception as e:
-    print(f'读取计时报告失败: {e}')
-    import traceback
-    traceback.print_exc()
-"
-else
-    echo "未找到计时报告文件"
-fi
+# 测试3: 各向同性
+echo "[3/5] 各向同性"
+T3=$(date +%s)
+CUDA_VISIBLE_DEVICES=$GPU python train.py -s "$DATA_PATH" --port 6103 \
+    --expname "debug/isotropic" --configs arguments/dynerf/debug_isotropic.py \
+    --quiet 2>&1 | tee /tmp/debug_isotropic.log
+T3_TIME=$(( $(date +%s) - T3 ))
+P3=$(grep "Number of points" /tmp/debug_isotropic.log | tail -1 | awk '{print $NF}')
+echo "✓ ${T3_TIME}s, 点数: $P3"
+grep "\[Isotropic\]" /tmp/debug_isotropic.log | head -2
+echo ""
 
+# 测试4: 简化RGB
+echo "[4/5] 简化RGB"
+T4=$(date +%s)
+CUDA_VISIBLE_DEVICES=$GPU python train.py -s "$DATA_PATH" --port 6104 \
+    --expname "debug/simplified" --configs arguments/dynerf/debug_simplified.py \
+    --quiet 2>&1 | tee /tmp/debug_simplified.log
+T4_TIME=$(( $(date +%s) - T4 ))
+P4=$(grep "Number of points" /tmp/debug_simplified.log | tail -1 | awk '{print $NF}')
+echo "✓ ${T4_TIME}s, 点数: $P4"
+grep "\[Simplified\]" /tmp/debug_simplified.log | head -2
 echo ""
-echo "调试测试完成！"
+
+# 测试5: 全部改进
+echo "[5/5] 全部改进"
+T5=$(date +%s)
+CUDA_VISIBLE_DEVICES=$GPU python train.py -s "$DATA_PATH" --port 6105 \
+    --expname "debug/all" --configs arguments/dynerf/debug_all.py \
+    --quiet 2>&1 | tee /tmp/debug_all.log
+T5_TIME=$(( $(date +%s) - T5 ))
+P5=$(grep "Number of points" /tmp/debug_all.log | tail -1 | awk '{print $NF}')
+echo "✓ ${T5_TIME}s, 点数: $P5"
 echo ""
-echo "=== Results Location ==="
-echo "Timing report: output/${TEST_EXPNAME}/timing_report.json"
-echo "Gradient curves: output/${TEST_EXPNAME}/gradient_vis/gradient_curves/"
-echo "3D visualization: output/${TEST_EXPNAME}/gradient_vis/gradient_3d/"
-echo "Saved models: output/${TEST_EXPNAME}/point_cloud/"
+
+# 结果汇总
+echo "=========================================="
+echo "Debug测试结果"
+echo "=========================================="
+printf "%-20s %10s %12s\n" "配置" "时间(秒)" "点数"
+echo "------------------------------------------"
+printf "%-20s %10s %12s\n" "Baseline" "$T1_TIME" "$P1"
+printf "%-20s %10s %12s\n" "网格剪枝" "$T2_TIME" "$P2"
+printf "%-20s %10s %12s\n" "各向同性" "$T3_TIME" "$P3"
+printf "%-20s %10s %12s\n" "简化RGB" "$T4_TIME" "$P4"
+printf "%-20s %10s %12s\n" "全部改进" "$T5_TIME" "$P5"
+echo "=========================================="
 echo ""
-echo "=== Saved Point Cloud ==="
-if [ -d "output/${TEST_EXPNAME}/point_cloud" ]; then
-    echo "Generated point clouds:"
-    ls -lh output/${TEST_EXPNAME}/point_cloud/ 2>/dev/null
-else
-    echo "No point cloud saved (training may have failed)"
-fi
-echo ""
-echo "=== 3D Visualization Files ==="
-if [ -d "output/${TEST_EXPNAME}/gradient_vis/gradient_3d" ]; then
-    html_files=$(ls output/${TEST_EXPNAME}/gradient_vis/gradient_3d/*.html 2>/dev/null)
-    if [ -n "$html_files" ]; then
-        echo "Generated interactive 3D visualizations:"
-        ls -lh output/${TEST_EXPNAME}/gradient_vis/gradient_3d/*.html 2>/dev/null
-        echo ""
-        echo "Open in browser:"
-        for f in $html_files; do
-            echo "  firefox $f"
-        done
-        echo ""
-        echo "Recommended files to view:"
-        echo "  - gradient_timeline.html (⭐ Time slider + Interactive controls)"
-        echo "  - grad3d_fine_iter_*.html (Snapshot during training)"
-        echo "  - gradient_3d_final.html (Final gradient)"
-        echo ""
-        echo "Timeline Visualization:"
-        echo "  Controls:"
-        echo "    • Point Size: Adjust point cloud size (0.1x - 5x)"
-        echo "    • Arrow Size: Adjust arrow display size (0.5x - 16x)"
-        echo "    • Visibility: Show Both / Points Only / Arrows Only"
-        echo "    • Time Slider: View gradients at different time points"
-        echo "    • Play/Pause: Automatic animation"
-        echo "  Visualization:"
-        echo "    • Arrow direction = Gradient direction (normalized)"
-        echo "    • Color (point & arrow) = Gradient magnitude"
-        echo "    • Arrow length = Uniform (adjustable via dropdown)"
-        echo ""
-        echo "Notes:"
-        echo "  - All settings persist during Play/Slider changes (JS-based)"
-        echo "  - Open browser console (F12) to see debug logs"
-    else
-        echo "No 3D visualization generated (check if Plotly is installed)"
-    fi
-else
-    echo "No 3D visualization generated"
-fi
-echo ""
+echo "输出: output/debug/{baseline,pruning,isotropic,simplified,all}/"
+echo "日志: /tmp/debug_*.log"

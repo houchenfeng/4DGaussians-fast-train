@@ -1,0 +1,53 @@
+================================================================================
+                    配置文件说明
+================================================================================
+
+基础配置 (2个):
+  debug_test.py       - Debug测试基础 (300iter, 快速验证)
+  sear_steak.py       - 完整训练基础 (14000iter, 真实性能)
+
+Debug测试配置 (5个, 继承debug_test.py):
+  debug_baseline.py    - Baseline (无改进)
+  debug_pruning.py     - 仅网格剪枝
+  debug_isotropic.py   - 仅各向同性
+  debug_simplified.py  - 仅简化RGB (sh_degree=0)
+  debug_all.py         - 全部改进 (sh_degree=0)
+
+完整测试配置 (5个, 继承sear_steak.py):
+  sear_steak.py            - Baseline (无改进)
+  sear_steak_pruning.py    - 仅网格剪枝
+  sear_steak_isotropic.py  - 仅各向同性
+  sear_steak_simplified.py - 仅简化RGB (sh_degree=0)
+  sear_steak_all.py        - 全部改进 (sh_degree=0)
+
+================================================================================
+                    使用说明
+================================================================================
+
+debug_test.sh 使用的配置:
+  - debug_baseline.py
+  - debug_pruning.py
+  - debug_isotropic.py
+  - debug_simplified.py
+  - debug_all.py
+
+run.sh 使用的配置:
+  ./run.sh baseline    → sear_steak.py
+  ./run.sh pruning     → sear_steak_pruning.py
+  ./run.sh isotropic   → sear_steak_isotropic.py
+  ./run.sh simplified  → sear_steak_simplified.py
+  ./run.sh all         → sear_steak_all.py
+
+================================================================================
+                    配置内容对比
+================================================================================
+
+配置             剪枝  各向同性  简化RGB  SH度
+-------------------------------------------------
+baseline        ✗     ✗        ✗       3
+pruning         ✓     ✗        ✗       3
+isotropic       ✗     ✓        ✗       3
+simplified      ✗     ✗        ✓       0
+all             ✓     ✓        ✓       0
+
+================================================================================

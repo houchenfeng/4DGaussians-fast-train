@@ -59,6 +59,8 @@ class ModelParams(ParamGroup):
         self.extension=".png"
         self.llffhold=8
         self.use_grid_pruning=False  # Instant4D网格剪枝，减少92%点云，4倍训练加速
+        self.use_isotropic_gaussian=False  # Instant4D各向同性高斯，提高稳定性
+        self.use_simplified_rgb=False  # Instant4D简化RGB，参数减少60%
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):

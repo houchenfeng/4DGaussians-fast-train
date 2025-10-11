@@ -21,6 +21,8 @@ from utils.camera_utils import cameraList_from_camInfos, camera_to_JSON
 from torch.utils.data import Dataset
 from scene.dataset_readers import add_points
 from utils.grid_pruning import grid_pruning
+from utils.isotropic_gaussian import make_isotropic_scaling
+from utils.simplified_rgb import init_simplified_rgb, simplify_sh_features
 class Scene:
 
     gaussians : GaussianModel
@@ -97,26 +99,46 @@ class Scene:
                                                     "iteration_" + str(self.loaded_iter),
                                                    ))
         else:
-            # 应用网格剪枝 (Grid Pruning) - Instant4D 加速策略
-            # 减少92%点云数量，4倍训练加速，6倍渲染提升
+            # 应用 Instant4D 改进
+            pcd_to_use = scene_info.point_cloud
+            
+            # 1. 应用网格剪枝 (Grid Pruning)
             if args.use_grid_pruning:
                 print("\n[Instant4D Grid Pruning] 开始应用网格剪枝...")
-                # 获取训练相机用于计算自适应体素大小
                 try:
                     train_cams = scene_info.train_cameras[:10] if hasattr(scene_info.train_cameras, '__getitem__') else []
                 except:
                     train_cams = None
                 
-                pruned_pcd = grid_pruning(
-                    scene_info.point_cloud, 
+                pcd_to_use = grid_pruning(
+                    pcd_to_use, 
                     cameras=train_cams,
                     use_adaptive=True,
-                    static_scale=4.0,  # 论文中静态区域使用4
-                    dynamic_scale=3.0   # 论文中动态区域使用3
+                    static_scale=4.0,
+                    dynamic_scale=3.0
                 )
-                self.gaussians.create_from_pcd(pruned_pcd, self.cameras_extent, self.maxtime)
-            else:
-                self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent, self.maxtime)
+            
+            # 2. 应用简化RGB (在高斯初始化前处理)
+            if args.use_simplified_rgb:
+                print("\n[Instant4D Simplified RGB] 将使用简化RGB表示...")
+                print("[Simplified RGB] 只使用DC分量，参数减少60%+")
+            
+            # 创建高斯
+            self.gaussians.create_from_pcd(pcd_to_use, self.cameras_extent, self.maxtime)
+            
+            # 3. 应用各向同性高斯 (在高斯创建后)
+            if args.use_isotropic_gaussian:
+                print("\n[Instant4D Isotropic Gaussian] 启用各向同性高斯...")
+                # 修改scaling方法
+                original_get_scaling = self.gaussians.get_scaling
+                
+                @property
+                def isotropic_get_scaling(self):
+                    aniso_scaling = self.gaussians.scaling_activation(self.gaussians._scaling)
+                    return aniso_scaling[:, 0:1].repeat(1, 3)
+                
+                type(self.gaussians).get_scaling = isotropic_get_scaling
+                print("[Isotropic Gaussian] 使用第一个缩放参数应用到所有轴")
 
     def save(self, iteration, stage):
         if stage == "coarse":
